@@ -4,6 +4,7 @@
 
 # Security Decision Labs
 
+Built and maintained by Laura Voicu ([LinkedIn](https://www.linkedin.com/in/voiculaura/) · [ORCID](https://orcid.org/0009-0008-4623-2532)).
 FAIR cyber risk quantification toolkit: agent-based control simulation, threat event frequency estimator, LLM classification validator, Monte Carlo risk engine.
 
 Part of [Apropos Security](https://apropos-security.com) · [Notebooks](https://security-decision-science.github.io/security-decision-science/) · [Library (pip)](https://github.com/security-decision-science/decision-security) · [Blog](https://medium.com/apropos-security)
