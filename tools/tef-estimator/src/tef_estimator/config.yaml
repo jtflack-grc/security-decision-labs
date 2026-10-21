@@ -1,6 +1,8 @@
-# TEF Estimator default configuration.
+# TEF Estimator default configuration. This copy ships inside the package,
+# so a pip upgrade replaces it — don't edit it in site-packages.
 #
-# To override, copy this file to ~/.tef-estimator/config.yaml and edit.
+# To override, create ~/.tef-estimator/config.yaml with only the keys you want
+# to change: it is deep-merged over these defaults and survives upgrades.
 # The UI can further override these values at runtime.
 
 # Population-level susceptibility prior used to convert observed LEF to TEF.
@@ -23,10 +25,110 @@ dampening:
   max_composite: 5.0
 
 # Bühlmann credibility k per vector.
-# Lower k = faster convergence to observed data.
-# Exploitation is well-observed (WAF/IDS), supply chain is sparse.
+# Lower k = faster convergence to observed data: weight on the org's own
+# telemetry Z = n / (n + k), n = observation_periods x detection_coverage.
+# k describes how much rates differ BETWEEN organizations (heterogeneity).
+# Only cross-organization data (IRIS-type, insurer portfolios) can measure it.
+# All four values are asserted (expert judgment) as of 1.2.0. Earlier notes
+# cited time-series NegBin fits (KEV, HIBP) for exploitation and credential;
+# those measure burstiness over time (see "dispersion"), not differences
+# between organizations, so they cannot ground k. Planned: fit k from
+# cross-organization data (a methods change that will move telemetry estimates).
 credibility_k:
   exploitation: 6.0
+  exploitation_calibration: asserted
+  exploitation_citation: "Judgment, unchanged from 1.1.x. A 1.2.0 draft raised it to 32 from a KEV time-series fit, which can't measure k, so it stays at 6 until cross-organization data grounds it. Not grounded in cross-organization data yet."
   credential: 10.0
+  credential_calibration: asserted
+  credential_citation: "Judgment. Moderate observability via auth logs and gateways. Not grounded in cross-organization data yet."
   phishing: 10.0
+  phishing_calibration: asserted
+  phishing_citation: "Judgment. Moderate observability via the email gateway. Not grounded in cross-organization data yet."
   supply_chain: 40.0
+  supply_chain_calibration: asserted
+  supply_chain_citation: "Judgment. Sparse, mostly invisible observations; k=40 errs safe (slow credibility)."
+
+# Band hardening: prevent overconfident band contraction from telemetry.
+band_hardening:
+  min_sigma_ratio: 0.25
+  coverage_leverage_cap: 5.0
+
+# k-sensitivity sweep ranges [low, asserted, high] per vector.
+# Judgment ranges around the asserted k (see credibility_k above). The low ends
+# were first set from time-series dispersion fits, which don't measure k; they
+# are kept as plausible lower bounds, not as fitted values. Exploitation sweeps
+# upward instead: 32 shows what slower credibility would do.
+k_sensitivity:
+  exploitation: [6.0, 6.0, 32.0]
+  credential: [6.0, 10.0, 10.0]
+  phishing: [6.0, 10.0, 10.0]
+  supply_chain: [20.0, 40.0, 40.0]
+
+# Exploitation vector ceiling values (annual probability).
+# edge_device: scanning+exploitation tempo against VPN/RDP (DShield placeholder).
+# cloud_primary: no edge attack surface.
+# default: moderate attack surface.
+# _basis: grounded (data-sourced), interpolated, assumption (judgment).
+# Revenue-per-employee (RPE, USD thousands) by sector.
+# Source: Damodaran Online (SBC-reconstructed, amber badge).
+# Used to infer employee_count when not provided:
+#   employees = revenue_midpoint / (rpe * 1000)
+# Sub-sector overrides take priority (e.g., NAICS 622 hospitals).
+revenue_per_employee:
+  healthcare: 218
+  healthcare_622: 214
+  financial: 685
+  manufacturing: 345
+  technology: 520
+  retail: 225
+  energy: 1200
+  education: 120
+  government: 150
+  professional_services: 200
+  transportation: 400
+  utilities: 580
+  entertainment: 190
+  other: 300
+
+# Dispersion: burstiness of the rate over time (Gamma-mixed rate -> negative
+# binomial counts). Not credibility k (k = how rates differ BETWEEN orgs).
+# shape r is the Gamma shape of the shared monthly rate multiplier, fitted on
+# public monthly series. Exploitation: CISA KEV new entries, Jan 2023-May 2026
+# (41 months, the window the timescale analysis rests on; a 12-month window,
+# Jun 2025-May 2026, gives r = 46.4, raw 23.0, kept as a sensitivity case).
+# Ransomware: ransomware.live leak-site postings, Jun 2025-May 2026 (fits run
+# 2026-10-16; refit on a newer window when refreshing reference data).
+# Lower r = burstier. null = Poisson (no public series to fit).
+# timescale: how long a shock lasts. "month" = independent monthly shocks
+#   (annual shape = 12 r); "year" = one shock persists all year (annual shape
+#   = r, the cautious alternative). Default "month": KEV residuals show no
+#   month-to-month carry-over once the 2022 catalogue back-fill is excluded
+#   (Ljung-Box p 0.97-0.99, 2023-2026), and quarterly shapes are ~3.6-4.4x the
+#   monthly ones, as independent months predict (~3). Full analysis:
+#   docs/dispersion-timescale.md, scripts/dispersion_timescale_check.py.
+# basis: "detrended" (NB2 regression with a time trend) is the default;
+#   "raw" (method of moments, absorbs the trend) is the sensitivity bound.
+dispersion:
+  timescale: month
+  basis: detrended
+  vectors:
+    exploitation:
+      shape_r: 21.6
+      raw_shape_r: 13.3
+      source: "CISA KEV new entries per month, Jan 2023-May 2026 (2022 catalogue back-fill excluded; linear trend). KEV counts vulnerabilities CISA newly added to the catalog, not attacks."
+    credential: null
+    phishing: null
+    supply_chain: null
+  scenarios:
+    ransomware:
+      shape_r: 129.7
+      raw_shape_r: 34.9
+      source: "ransomware.live leak-site postings per month, Jun 2025-May 2026. Batching inflates dispersion, so r is on the conservative (low) side."
+
+exploitation_ceilings:
+  edge_device: 1000.0
+  edge_device_basis: assumption
+  cloud_primary: 0.01
+  cloud_primary_basis: assumption
+  default: 0.1
+  default_basis: assumption

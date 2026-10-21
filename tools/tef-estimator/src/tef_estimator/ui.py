@@ -28,6 +28,8 @@ from tef_estimator.data.common import (
 )
 from tef_estimator.data.loader import PEER_GRID_DIR
 from tef_estimator.data.scenarios.bec import BECScenario
+from tef_estimator.data.scenarios.exfiltration import ExfiltrationScenario
+from tef_estimator.data.scenarios.web_app import WebAppScenario
 from tef_estimator.data.scenarios.ransomware import RansomwareScenario
 from tef_estimator.engine import TEFEngine
 from tef_estimator.peer import compute_and_set_percentile, load_grid
@@ -51,6 +53,8 @@ except ImportError:
 BUILTIN_SCENARIOS = {
     "ransomware": RansomwareScenario,
     "bec": BECScenario,
+    "exfiltration": ExfiltrationScenario,
+    "web_app": WebAppScenario,
 }
 
 ACCENT = "#E74C3C"
@@ -76,7 +80,7 @@ def _discover_custom_scenarios() -> dict[str, Path]:
 
 
 def _all_scenario_options() -> dict[str, str]:
-    opts = {"ransomware": "Ransomware", "bec": "BEC"}
+    opts = {"ransomware": "Ransomware", "bec": "BEC", "exfiltration": "Data Exfiltration", "web_app": "Web App Exploitation"}
     for slug, path in _discover_custom_scenarios().items():
         try:
             data = json.loads(path.read_text())
@@ -666,6 +670,10 @@ class TEFEstimatorApp:
                             with ui.row().classes("justify-between w-full"):
                                 ui.label(label).classes("text-xs text-slate-500")
                                 ui.label(val).classes("text-xs font-mono text-white")
+                        ui.label("For fair-risk-engine").classes("text-xs font-semibold text-slate-400 mt-3")
+                        ui.label(result.fair_risk_engine_text().strip()).classes(
+                            "text-xs font-mono text-white whitespace-pre-wrap break-all"
+                        )
 
                     with ui.card().classes("bg-slate-900 border-slate-700"):
                         ui.label("Vector Priority").classes(
@@ -679,6 +687,44 @@ class TEFEstimatorApp:
                             )
                             for driver in v.primary_drivers:
                                 ui.label(f"  {driver}").classes("text-xs text-slate-400")
+
+            if result.dispersion:
+                with ui.expansion("Dispersion (burstiness over time)", icon="ssid_chart").classes(
+                    "w-full bg-slate-800 border-slate-700"
+                ):
+                    ui.label(
+                        "How much the rate is shaken in time by shared shocks (campaign waves, mass "
+                        "exploitation). For simulating event counts: negative binomial instead of Poisson. "
+                        "Never changes the TEF estimate."
+                    ).classes("text-xs text-slate-400")
+                    rows = [("Total", result.total_dispersion, result.total_positioned_median)]
+                    rows += [(v.vector_name, result.dispersion.get("vectors", {}).get(v.telemetry_key),
+                              v.positioned_median) for v in result.vectors]
+                    with ui.grid(columns=5).classes("w-full gap-x-4 gap-y-1 mt-2"):
+                        for head in ("", "Shape r (month)", "Annual shape", "VMR at your rate", "Basis"):
+                            ui.label(head).classes("text-xs text-slate-500")
+                        for name, d, rate in rows:
+                            ui.label(name).classes("text-sm text-white")
+                            if d is None or d.is_poisson:
+                                ui.label("Poisson").classes("text-xs font-mono text-slate-400")
+                                for _ in range(3):
+                                    ui.label("—").classes("text-xs text-slate-500")
+                                continue
+                            ui.label(f"{d.shape_r:g}").classes("text-xs font-mono text-white").tooltip(d.source)
+                            ui.label(f"{d.annual_shape:g}").classes("text-xs font-mono text-white")
+                            ui.label(f"{d.vmr(rate):.4f}").classes("text-xs font-mono text-white")
+                            ui.label(d.basis).classes("text-xs text-slate-400")
+                    with ui.column().classes("gap-0 mt-2"):
+                        for name, d, _ in rows:
+                            if d is not None and not d.is_poisson:
+                                ui.label(f"{name}: {d.source}").classes("text-xs text-slate-500")
+                    td = result.total_dispersion
+                    timescale = td.timescale if td is not None else "month"
+                    ui.label(
+                        f"Timescale: {timescale} "
+                        f"({'independent monthly shocks, annual shape 12 r' if timescale == 'month' else 'one shock lasts the year, annual shape r'}). "
+                        "Poisson where no public series supports a fit. Set in config.yaml → dispersion."
+                    ).classes("text-xs text-slate-500 mt-2")
 
             if result.has_credibility_data:
                 with ui.expansion("Credibility Adjustment", icon="tune").classes(
@@ -738,8 +784,9 @@ class TEFEstimatorApp:
                         ui.label(f"! {warn}").classes("text-xs text-amber-300")
 
         # Compare
-        if self.state.get("compare_mode") and self.compare_container is not None:
+        if self.compare_container is not None:
             self.compare_container.clear()
+        if self.state.get("compare_mode") and self.compare_container is not None:
             compare_state = {
                 **self.state,
                 "sector": self.state_b["sector"],

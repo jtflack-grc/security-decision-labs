@@ -1,0 +1,104 @@
+{
+  "_metadata": {
+    "scenario": "data_exfiltration",
+    "description": "Data exfiltration scenario — TEF-D1",
+    "status": "Substrata-grounded",
+    "extracted_date": "2026-07-24",
+    "extracted_by": "Laura Voicu",
+    "_data_sources_needed": [
+      "IRIS non-RW LEF",
+      "DBIR exfil shares",
+      "Coalition non-RW claims"
+    ]
+  },
+  "base_rate_triangulation": {
+    "_citation": "Coalition 2025 (ransomware_share 0.297), IRIS 2025 baseline",
+    "susceptibility_prior": [0.10, 0.20, 0.30],
+    "consensus": [0.008, 0.025, 0.07],
+    "consensus_note": "Non-ransomware LEF anchored in Coalition 2025 (70.3% of claims are non-RW) x IRIS baseline. Mode 2.5% = ~0.7 x IRIS mid-market mode 3.5%."
+  },
+  "vector_proportions": {
+    "_citation": "DBIR 2026 vector shares, adjusted for exfiltration pattern (DBIR 2025 Espionage)",
+    "exploitation": [0.15, 0.22, 0.30],
+    "credential": [0.35, 0.45, 0.55],
+    "phishing": [0.15, 0.20, 0.28],
+    "supply_chain": [0.03, 0.08, 0.15]
+  },
+  "exfiltration_overall_share": {
+    "_citation": "DBIR 2026 espionage pattern ~8% of breaches; IRIS does not separate exfiltration. Judgment anchor.",
+    "_badge": "gray",
+    "value": 0.08
+  },
+  "exfiltration_sector_shares": {
+    "_citation": "Derived from sector_multipliers x overall_share. Not directly measured — tracks all-incident ratios from IRIS 2025 Figure A1.",
+    "_badge": "gray",
+    "healthcare": 0.107,
+    "financial": 0.115,
+    "information": 0.124,
+    "manufacturing": 0.082,
+    "retail": 0.095,
+    "education": 0.128,
+    "public": 0.107,
+    "professional": 0.120,
+    "utilities": 0.050,
+    "transportation": 0.062
+  },
+  "exfiltration_revenue_shares": {
+    "_citation": "No exfiltration-specific revenue breakdown available. Uses all-incident shares from IRIS 2025.",
+    "_badge": "gray",
+    "under_10m": 0.08,
+    "10m_100m": 0.08,
+    "100m_1b": 0.08,
+    "1b_10b": 0.08,
+    "10b_100b": 0.08,
+    "over_100b": 0.08
+  },
+  "exfiltration_revenue_prob_gte2": {
+    "_citation": "Not available from IRIS for exfiltration specifically. All null — tool falls back to overall floor.",
+    "_badge": "gray",
+    "under_10m": null,
+    "10m_100m": null,
+    "100m_1b": null,
+    "1b_10b": null,
+    "10b_100b": null,
+    "over_100b": null
+  },
+  "sector_multipliers": {
+    "_citation": "IRIS 2025 Figure A1 sector multipliers (exfiltration pattern tracks all-incident)",
+    "healthcare": 1.34,
+    "financial": 1.44,
+    "information": 1.55,
+    "manufacturing": 1.03,
+    "retail": 1.19,
+    "education": 1.60,
+    "public": 1.34,
+    "professional": 1.50,
+    "utilities": 0.62,
+    "transportation": 0.78
+  },
+  "credential_tempo": {
+    "_citation": "Exfiltration credential vector uses same tempo data as ransomware (Recorded Future + IR reports). Both attack types target the same credential markets.",
+    "_badge": "amber",
+    "global_campaigns_per_month": [500, 1200, 3000],
+    "credential_proportion": [0.35, 0.50, 0.65],
+    "addressable_population": [5000000, 10000000, 15000000]
+  },
+  "exploitation_scanning": {
+    "_citation": "GreyNoise-derived scanning telemetry. Exfiltration uses same scanning infrastructure as ransomware for initial access.",
+    "_badge": "amber",
+    "grn_malicious_rate": [0.15, 0.32, 0.45],
+    "grn_session_malicious_rate": 0.037,
+    "grn_suspicious_rate": null,
+    "campaign_ip_ratio_lognormal_mu": 4.0,
+    "campaign_ip_ratio_lognormal_sigma": 1.5,
+    "poa_ransomware": [0.005, 0.02, 0.05],
+    "poa_ransomware_note": "Lower than ransomware — exfiltration actors are more selective.",
+    "ransomware_proportion_of_scanning": [0.05, 0.15, 0.30],
+    "ransomware_proportion_note": "Exfiltration-motivated scanning is a smaller share than ransomware-motivated."
+  },
+  "output_templates": {
+    "scenario_label": "Data Exfiltration",
+    "attempt_verb": "attempt data exfiltration against",
+    "one_sentence": "Based on industry data, threat actors {attempt_verb} organizations matching your profile roughly once every {recurrence_years:.0f} years (range: {low_yr:.0f}-{high_yr:.0f} years). This measures how often adversaries TRY -- not how often they succeed. Success probability depends on your controls (assessed separately)."
+  }
+}

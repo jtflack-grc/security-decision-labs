@@ -1,6 +1,6 @@
 # TEF Estimator Technical Reference
 
-Version 1.1.3
+Version 1.2.0
 
 Complete documentation of every module, design decision, data source, parameter choice, and provenance chain in the TEF estimation engine.
 
@@ -59,8 +59,8 @@ engine.py (TEFEngine)
 data/loader.py
     |
     +---> data/reference/{iris,beazley,coalition,at_bay,greynoise,...}/extracted.json
-    +---> data/scenarios/{ransomware,bec}.json
-    +---> data/scenarios/{ransomware,bec,custom}.py
+    +---> data/scenarios/{ransomware,bec,exfiltration,web_app}.json
+    +---> data/scenarios/{ransomware,bec,exfiltration,web_app,custom}.py
 ```
 
 ---
@@ -108,7 +108,7 @@ for each vector with org-specific observations:
     enforce_bounds()
 ```
 
-The Bühlmann blend is mathematically equivalent to the Gamma-Poisson posterior mean: the credibility weight Z = n/(n+k) is exactly Bayes' rule for a Gamma(α, β) prior updated with Poisson observations. This equivalence motivates the band contraction, which derives bands from the Gamma posterior's coefficient of variation so that more observation periods monotonically narrow the output distribution. The implementation uses two separately calibrated parameters (k for the mean, α_pert for the band) rather than a single coherent Bayesian model (see §8.6 for the full derivation and known limitations).
+The Bühlmann blend is mathematically equivalent to the Gamma-Poisson posterior mean: the credibility weight Z = n/(n+k) is exactly Bayes' rule for a Gamma(α, β) prior updated with Poisson observations. This equivalence motivates the band contraction, which derives bands from the Gamma posterior's coefficient of variation so that more observation periods narrow the output distribution (up to the band-hardening limits, §8.6). The implementation uses two separately calibrated parameters (k for the mean, α_pert for the band) rather than a single coherent Bayesian model (see §8.6 for the full derivation and known limitations).
 
 **Step 4: Cross-Vector Aggregation with Dampening**
 ```
@@ -203,12 +203,12 @@ The susceptibility prior (default 10–30%) represents "the average organization
 
 ### Step 2: Vector Decomposition
 
-The base rate is split across 4 initial-access vectors (proportions from multi-source IR reports: Beazley, Verizon, Unit42, Mandiant, CrowdStrike, Sophos):
+The base rate is split across 4 initial-access vectors (proportions from multi-source IR reports: Beazley, DBIR 2026, Mandiant 2026, Unit42, CrowdStrike):
 
 ```
-credential:    PERT(0.45, 0.52, 0.58)   ← 52% of ransomware initial access
-exploitation:  PERT(0.18, 0.22, 0.28)   ← 22%
-phishing:      PERT(0.12, 0.17, 0.22)   ← 17%
+credential:    PERT(0.40, 0.48, 0.56)   ← 48% of ransomware initial access
+exploitation:  PERT(0.20, 0.26, 0.34)   ← 26%
+phishing:      PERT(0.10, 0.15, 0.22)   ← 15%
 supply_chain:  PERT(0.04, 0.06, 0.10)   ← 6%
 ```
 
@@ -216,9 +216,9 @@ Each vector's starting point:
 ```
 vector_base = base_rate.mode × proportion.mode
 
-credential_base   = 0.03 × 0.52 = 0.0156
-exploitation_base = 0.03 × 0.22 = 0.0066
-phishing_base     = 0.03 × 0.17 = 0.0051
+credential_base   = 0.03 × 0.48 = 0.0144
+exploitation_base = 0.03 × 0.26 = 0.0078
+phishing_base     = 0.03 × 0.15 = 0.0045
 supply_chain_base = 0.03 × 0.06 = 0.0018
 ```
 
@@ -310,18 +310,18 @@ The `(raw - 1)` extracts the **excess above baseline**. `× k` compresses that e
 For the exploitation vector:
 ```
 positioned_median = vector_base × dampened_composite
-                = 0.0066 × 2.659
-                = 0.01755   (1.76%)
+                = 0.0078 × 2.661
+                = 0.02075   (2.08%)
 ```
 
 The floor for this vector:
 ```
 floor = IRIS_overall_lower_bound × exploitation_proportion × adjusted_sector
-      = 0.00465 × 0.22 × 1.657
-      = 0.001695   (0.17%)
+      = 0.00465 × 0.26 × 1.657
+      = 0.002003   (0.20%)
 ```
 
-Positioned (1.76%) > floor (0.17%), so floor doesn't bind. Each vector runs this independently with its own tech multiplier selection and vector-specific logic.
+Positioned (2.08%) > floor (0.20%), so floor doesn't bind. Each vector runs this independently with its own tech multiplier selection and vector-specific logic.
 
 ### Step 7: Cross-Vector Aggregation
 
@@ -343,13 +343,13 @@ total_floor = overall_floor × adjusted_sector = 0.00465 × 1.657 = 0.0077
 total_median = max(total_median, total_floor)
 ```
 
-For this profile: total_median (6.33%) >> total_floor (0.77%), so the floor doesn't bind.
+For this profile: total_median (6.21%) >> total_floor (0.77%), so the floor doesn't bind.
 
 ### Step 9: Lognormal Output
 
 The positioned estimate becomes a lognormal for downstream Monte Carlo consumers:
 ```
-μ = ln(median) = ln(0.0633) = -2.76
+μ = ln(median) = ln(0.0621) = -2.778
 
 σ_low  = (μ - ln(low)) / 1.645        # low targets ~5th percentile
 σ_high = (ln(high) - μ) / 1.645       # high targets ~95th percentile
@@ -357,9 +357,14 @@ The positioned estimate becomes a lognormal for downstream Monte Carlo consumers
 ```
 
 This gives a right-skewed distribution where:
-- Median = positioned mode (6.33%)
-- P5 ≈ positioned low
-- P95 ≈ positioned high
+- Median = positioned median (6.21%)
+- P5 ≈ positioned low (0.78%)
+- P95 ≈ positioned high (49.6%)
+
+The lognormal is centred on the positioned total rather than built from the four vectors' lognormals
+(Fenton-Wilkinson, `LognormalParams.fenton_wilkinson()`): that sum assumes independent vectors, but
+they share one base rate, so their uncertainty is largely common. For fully dependent vectors the
+median of the total is the sum of the medians, which is what the positioned total uses.
 
 ### The Complete Formula
 
@@ -387,11 +392,11 @@ Output: Lognormal(μ = ln(TEF_total), σ = f(range))
 ### Verified Output for This Profile
 
 Manufacturing, \$100M–$1B, US, Fortinet VPN, ransomware:
-- **TEF positioned mode: 6.33%** (once every ~16 years)
+- **TEF positioned median: 6.21%** (once every ~16 years)
 - Exploitation: ~28% of total
-- Credential: ~41% of total
-- Phishing: ~21% of total
-- Supply chain: ~10% of total
+- Credential: ~52% of total
+- Phishing: ~14% of total
+- Supply chain: ~5% of total
 - Base rate dominates sensitivity by ~10× over any other parameter
 
 ---
@@ -402,14 +407,16 @@ Each of the four initial access vectors has its own threat model, floor/ceiling 
 
 ### Exploitation
 
-**Threat model**: Public-facing application/device vulnerability exploitation. ~20-25% of ransomware initial access (multi-source IR reports, CISA advisories, GreyNoise).
+**Threat model**: Public-facing application/device vulnerability exploitation. ~26% of ransomware initial access (PERT 20–34%; multi-source IR reports, DBIR 2026, Mandiant 2026, CISA advisories, GreyNoise).
 
 **Floor**: IRIS overall lower bound × exploitation proportion × adjusted sector multiplier.
 
 **Ceiling**:
-- Edge device present (VPN/RDP): unbounded (DShield confirms continuous scanning)
+- Edge device present (VPN/RDP): 1000, effectively unbounded (DShield confirms continuous scanning)
 - Cloud-primary, no edge: 0.01 (no edge attack surface)
 - Default: 0.1 (moderate attack surface)
+
+All three come from `exploitation_ceilings` in `config.yaml` and are labelled assumptions.
 
 **Multipliers**:
 1. Sector (scenario-adjusted from IRIS)
@@ -419,7 +426,7 @@ Each of the four initial access vectors has its own threat model, floor/ceiling 
 
 ### Credential
 
-**Threat model**: Stolen/purchased VPN/RDP/SSO credentials from Initial Access Brokers. ~50-55% of ransomware initial access (Beazley Q3 2025). Invisible to scanning telemetry.
+**Threat model**: Stolen/purchased VPN/RDP/SSO credentials from Initial Access Brokers. ~48% of ransomware initial access (PERT 40–56%; Beazley Q3 2025, DBIR 2026, At-Bay 2025). Invisible to scanning telemetry.
 
 **Floor**: IRIS overall lower bound × credential proportion × adjusted sector multiplier.
 
@@ -433,7 +440,7 @@ Each of the four initial access vectors has its own threat model, floor/ceiling 
 
 ### Phishing
 
-**Threat model**: Email-based social engineering delivering ransomware loaders. ~15-20% of ransomware initial access (multi-source IR reports). Partially observable — email volume is measurable but campaign initiation is not.
+**Threat model**: Email-based social engineering delivering ransomware loaders. ~15% of ransomware initial access (PERT 10–22%; multi-source IR reports). Partially observable — email volume is measurable but campaign initiation is not.
 
 **Floor**: IRIS overall lower bound × phishing proportion × adjusted sector multiplier.
 
@@ -449,7 +456,7 @@ Employee count directly affects TEF through Probability of Action: more recipien
 
 ### Supply Chain
 
-**Threat model**: Third-party/vendor compromise as attack pathway. ~5-8% of ransomware initial access (IR reports: 30% third-party involvement across all breaches). Not directly observable.
+**Threat model**: Third-party/vendor compromise as attack pathway. ~6% of ransomware initial access (PERT 4–10%; IR reports: 30% third-party involvement across all breaches). Not directly observable.
 
 **Floor**: IRIS overall lower bound × supply chain proportion × adjusted sector multiplier.
 
@@ -483,6 +490,8 @@ data/
   scenarios/
     ransomware.json                  # Ransomware scenario-specific parameters
     bec.json                         # BEC scenario-specific parameters
+    exfiltration.json                # Data exfiltration scenario (1.2.0)
+    web_app.json                     # Web application exploitation scenario (1.2.0)
   peer_grid/
     ransomware.json                  # Pre-computed peer percentile grid
     bec.json                         # Pre-computed peer percentile grid
@@ -516,7 +525,7 @@ Every JSON file follows the same conventions:
 | `ransomware_overall_share` | IRIS Ransomware Spotlight Table 1 | 0.317 (31.7% of all incidents are ransomware) -- used as denominator in sector/revenue share adjustment |
 | `ransomware_sector_shares` | IRIS Ransomware Spotlight Figure 13 | Per-sector ransomware proportion (hospitality 73%, manufacturing 51%, education 50%...) |
 | `ransomware_sector_loss_shares` | IRIS Ransomware Spotlight Figure 13 | Per-sector ransomware loss share (transportation 84%, education 79%, manufacturing 79%...) |
-| `ransomware_revenue_shares` | IRIS Ransomware Spotlight Figure 15 | Revenue band ransomware loss share (peaks at $1B-$10B: 53%) |
+| `ransomware_revenue_shares` | IRIS Ransomware Spotlight Figure 15 | Revenue band ransomware loss share (peaks at \$1B-\$10B: 53%) |
 | `ransomware_revenue_prob_gte2` | IRIS Ransomware Spotlight Table 3 | Annual probability of >=2 ransomware events by revenue band |
 
 **Key design decision**: Sector multipliers are IRIS all-incident multipliers (scenario-independent), then adjusted at runtime by each scenario's sector share. This means the same IRIS data serves all scenarios; scenario-specific differentiation comes from the scenario's `sector_shares`.
@@ -533,7 +542,7 @@ Every JSON file follows the same conventions:
 |-------|----------|----------|
 | `initial_access_vectors` | Beazley Q3 2025 | VPN credential proportion: 48%. RDP initial access: 6-10%. |
 | `ransomware_trends` | Beazley Q3 2025 | +16% YoY ransomware claims. Healthcare 22% share. |
-| `vector_proportions` | Derived from multi-source IR reports (Beazley, Verizon, Unit42, Mandiant, CrowdStrike, Sophos) | The four-vector PERT ranges used in RansomwareScenario: credential [45,52,58]%, exploitation [18,22,28]%, phishing [12,17,22]%, supply_chain [4,6,10]% |
+| `vector_proportions` | Derived from Beazley Q3 2025, DBIR 2026, Mandiant 2026, Unit42 2026, CrowdStrike 2026 | The four-vector PERT ranges used in RansomwareScenario: credential [40,48,56]%, exploitation [20,26,34]%, phishing [10,15,22]%, supply_chain [4,6,10]% |
 
 **Key design decision**: Vector proportions are derived from multiple sources (Beazley, Verizon, Unit42, Mandiant, CrowdStrike, Sophos), not from any single report. The ranges capture inter-source disagreement.
 
@@ -673,7 +682,7 @@ The NAIC data provides the **denominator** for Coalition bias correction and the
 | `geo_multipliers` | Judgment-informed by DBIR 2025 patterns | Judgment, pending empirical | US [1.1,1.2,1.3], W.Europe [1.0,1.1,1.2], APAC [0.8,0.9,1.1], Other [0.6,0.8,1.0] |
 | `profile_multipliers` | Judgment-informed by IRIS+DBIR | Judgment, pending empirical | critical_infrastructure [1.0,1.2,1.3], supply_chain_provider [1.1,1.3,1.5], recent_ma [1.0,1.2,1.3] |
 | `dampening_config` | VERIS VCDB (vector_k) + judgment (factor_k) | vector_k empirically supported; factor_k judgment-based | Defaults: factor_k=0.70, vector_k=0.85, max_composite=5.0, veris_pairwise_lifts. Configurable via `config.yaml`. |
-| `credibility_k` | Structural parameter from peer grid variance | Semi-empirical | Defaults: exploitation=6.0, credential=10.0, phishing=10.0, supply_chain=40.0. Configurable via `config.yaml`. |
+| `credibility_k` | Between-organization heterogeneity (Bühlmann) | Asserted (judgment) | Defaults: exploitation=6.0, credential=10.0, phishing=10.0, supply_chain=40.0, all asserted as of 1.2.0 (§8.3: the earlier time-series citations can't ground k). Per-vector k-sensitivity sweep ranges in `config.yaml` (`k_sensitivity`). |
 | `data_vintage` | Metadata | N/A | Records source vintage for each data file |
 
 ---
@@ -733,12 +742,12 @@ Where P(X) is the marginal probability of vector X in the incident population. L
 
 | Vector | PERT [low, mode, high] | Source |
 |--------|------------------------|--------|
-| Exploitation | [18%, 22%, 28%] | Derived from multi-source IR reports |
-| Credential | [45%, 52%, 58%] | Derived from multi-source IR reports |
-| Phishing | [12%, 17%, 22%] | Derived from multi-source IR reports |
+| Exploitation | [20%, 26%, 34%] | Derived from multi-source IR reports |
+| Credential | [40%, 48%, 56%] | Derived from multi-source IR reports |
+| Phishing | [10%, 15%, 22%] | Derived from multi-source IR reports |
 | Supply Chain | [4%, 6%, 10%] | Derived from multi-source IR reports |
 
-Modes sum to 97% (within the 85-115% tolerance for custom scenarios). The ranges capture inter-source disagreement.
+Modes sum to 95% (within the 85-115% tolerance for custom scenarios). The ranges capture inter-source disagreement.
 
 ### 6.4 Base Rate Triangulation (Ransomware)
 
@@ -800,7 +809,7 @@ This factor is used in the ransomware scenario's Coalition anchor in the base ra
 ### 7.1 Built-in Scenarios
 
 **Ransomware** (`data/scenarios/ransomware.py` + `ransomware.json`)
-- 4 vectors: exploitation (22%), credential (52%), phishing (17%), supply chain (6%)
+- 4 vectors: exploitation (26%), credential (48%), phishing (15%), supply chain (6%)
 - Base rate consensus: 3.0% annual probability (corrected from 1.0% after LEF→TEF susceptibility conversion)
 - Overall share: 31.7% of all cyber incidents (IRIS)
 - Full sector and revenue share data from IRIS Ransomware Spotlight
@@ -811,6 +820,16 @@ This factor is used in the ransomware scenario's Coalition anchor in the base ra
 - Overall share: 12% of all breaches (DBIR 2025 + FBI IC3)
 - BEC-specific sector shares from FBI IC3/Verizon (not IRIS, which doesn't publish BEC-specific data)
 - BEC-specific revenue shares: scales less steeply than ransomware; small businesses heavily targeted
+
+**Data exfiltration** (`data/scenarios/exfiltration.py` + `exfiltration.json`, TEF-D1). *Added in 1.2.0; CLI `--scenario exfiltration`, UI dropdown.*
+- 4 vectors: credential (45%), exploitation (22%), phishing (20%), supply chain (8%)
+- Base rate consensus: PERT(0.008, 0.025, 0.07) annual probability
+- Status "Substrata-grounded" (2026-07-24). Sources still needed: IRIS non-ransomware LEF, DBIR exfiltration shares, Coalition non-ransomware claims.
+
+**Web application exploitation** (`data/scenarios/web_app.py` + `web_app.json`, TEF-D2). *Added in 1.2.0; CLI `--scenario web_app`, UI dropdown.*
+- 4 vectors: exploitation (65%), credential (15%), phishing (10%), supply chain (10%)
+- Base rate consensus: PERT(0.015, 0.045, 0.12) annual probability
+- Status "Substrata-grounded" (2026-07-24). Sources still needed: DBIR web-app pattern by industry, IRIS public-facing-application share by revenue. (Edgescan/Cobalt vulnerability prevalence belongs to susceptibility, not TEF.) Overall share 10% = DBIR 2026 Basic Web Application Attacks.
 
 ### 7.2 Custom Scenarios
 
@@ -884,14 +903,16 @@ Detection coverage creates a **two-way adjustment**:
 
 ### 8.3 Per-Vector k Parameters
 
-| Vector | k | Rationale |
-|--------|---|-----------|
-| Exploitation | 6.0 | Well-observed via WAF/IDS; credibility grows fast |
-| Credential | 10.0 | Moderate observability via auth logs/gateway |
-| Phishing | 10.0 | Moderate observability via email gateway |
-| Supply Chain | 40.0 | Sparse observation, mostly invisible; credibility grows very slowly |
+| Vector | k | Status (1.2.0) | Rationale |
+|--------|---|---|-----------|
+| Exploitation | 6.0 | asserted | Unchanged since 1.1.x; a 1.2.0 draft value of 32 rested on a time-series fit that can't measure k |
+| Credential | 10.0 | asserted | Moderate observability via auth logs/gateway |
+| Phishing | 10.0 | asserted | Moderate observability via email gateway |
+| Supply Chain | 40.0 | asserted | Sparse observation, mostly invisible; credibility grows very slowly |
 
-**Methodology**: k = sigma^2(process) / sigma^2(hypothetical means). sigma^2(hypothetical means) estimated from peer grid TEF variance within revenue bands. Process variance assumed proportional to observation noise based on vector observability characteristics.
+**What k means**: k = σ²(process) / σ²(hypothetical means). The denominator is how much the true rates differ *between* organizations, so k can only be estimated from cross-organization data (IRIS-type, insurer portfolios). The weight on an organization's own telemetry is Z = n / (n + k), n = observation_periods × detection_coverage. Example: 8 quarters at 50% coverage gives n = 4, so Z = 40% at k = 6 and 29% at k = 10.
+
+**Status (1.2.0)**: all four values are asserted (judgment). Earlier notes justified exploitation and credential k with negative binomial fits on time series (detrended KEV r ≈ 18–32, HIBP r ≈ 4.8–6.5). Those fits measure how bursty a rate is *over time* (the dispersion shape r, §8.7), not how organizations differ, so they cannot ground k. A sum of organizations that each have a steady rate is still Poisson in time, whatever the differences between them. The citations were corrected in 1.2.0; the values were left unchanged so estimates don't move. Fitting k from cross-organization data is planned as a separate methods change.
 
 ### 8.4 Engine Integration
 
@@ -983,27 +1004,27 @@ The implementation fits α to match the PERT prior's width rather than using k d
 4. Update: `α_post = α_pert + N`
 5. Posterior sigma: `σ_post = √(ln(1 + 1/α_post))`
 
-At N = 0 (no telemetry), α_post = α_pert, so σ_post = σ_prior, meaning the band is unchanged. As N grows, α_post increases and σ_post decreases monotonically. The band can only contract, never widen.
+At N = 0 (no telemetry), α_post = α_pert, so σ_post = σ_prior, meaning the band is unchanged. As N grows, α_post increases and σ_post decreases. The band can only contract, never widen. Two limits (band hardening, 1.2.0): the observation quarters counted are capped at `coverage_leverage_cap` (5), so N stops growing beyond 5 quarters, and σ_post never falls below `min_sigma_ratio` (0.25) × σ_prior.
 
 #### Contraction Rates
 
-The contraction depends on how many pseudo-events accumulate relative to the prior shape α_pert. N = observed_rate × (periods / 4) because `observation_periods` is in quarters but `annualized_frequency` is per year — dividing by 4 converts to a proper event count. Detection coverage cancels in the product (see Limitations below). Computed from the actual credential vector of a Manufacturing / \$100M–$1B / US profile (positioned_low=0.0054, positioned_high=0.29, α_pert≈0.30):
+The contraction depends on how many pseudo-events accumulate relative to the prior shape α_pert. N = observed_rate × min(periods, 5) / 4: `observation_periods` is in quarters but `annualized_frequency` is per year, so dividing by 4 converts to an event count. `annualized_frequency` is the raw detected rate, so N is the number of events detected; coverage acts on the band only through that count (see Limitations below). Computed from the actual credential vector of a Manufacturing / \$100M–$1B / US profile (positioned_low=0.0037, positioned_high=0.155, α_pert≈0.38):
 
 | Observation | N | σ_prior | σ_post | Contraction |
 |-------------|---|---------|--------|-------------|
-| No telemetry | 0 | 1.21 | 1.21 | 0% |
-| 4 quarters (1 yr), rate 0.05 | 0.05 | 1.21 | 1.16 | 4% |
-| 8 quarters (2 yr), rate 0.05 | 0.10 | 1.21 | 1.12 | 8% |
-| 20 quarters (5 yr), rate 0.05 | 0.25 | 1.21 | 1.02 | 16% |
-| 40 quarters (10 yr), rate 0.10 | 1.00 | 1.21 | 0.76 | 38% |
+| No telemetry | 0 | 1.14 | 1.14 | 0% |
+| 4 quarters (1 yr), rate 0.05 | 0.050 | 1.14 | 1.10 | 3.5% |
+| 8 quarters (2 yr), rate 0.05 | 0.063 | 1.14 | 1.09 | 4.3% (cap binds) |
+| 20 quarters (5 yr), rate 0.05 | 0.063 | 1.14 | 1.09 | 4.3% (cap binds) |
+| 40 quarters (10 yr), rate 0.10 | 0.125 | 1.14 | 1.05 | 8.0% (cap binds) |
 
-Note: the prior is diffuse (α_pert ≈ 0.30 for a PERT band spanning ~50x), so even modest event counts produce visible contraction. With a typical incident rate of 0.05/year, meaningful contraction (>15%) requires approximately 5 years of observation.
+Beyond 5 quarters more observation does not narrow the band further. The prior is diffuse (α_pert ≈ 0.38 for a band spanning ~40x), and with the cap the band narrows by at most a few percent at typical incident rates; telemetry moves the estimate mainly through the Bühlmann mean.
 
 #### Why Two Parameters
 
 The credibility structural parameter k and the PERT-fitted α_pert serve different roles:
 
-- **k** controls how fast the **mean** moves toward the observation. It was calibrated from peer-grid variance ratios and reflects how much population heterogeneity each vector exhibits. Lower k means observations carry more weight faster.
+- **k** controls how fast the **mean** moves toward the observation. It is asserted (judgment, §8.3) and stands for how much rates differ between organizations for each vector. Lower k means observations carry more weight faster.
 - **α_pert** controls how fast the **band** contracts. It is derived from the prior PERT range (the consensus elicitation from multiple empirical sources) and represents how precisely the rate is known before organizational evidence.
 
 Using k directly as β for the variance would produce an unrealistically diffuse Gamma prior (the PERT is much more informative than k alone implies). Fitting α_pert from the actual PERT range ensures that the prior band matches the elicited expert range and contracts from that calibrated starting point.
@@ -1014,7 +1035,7 @@ This means the system is not a single Bayesian model — it draws on Gamma-Poiss
 
 1. **Lognormal approximation at low α.** The PERT bands span ~50–70x (e.g. credential: 0.005 to 0.29), producing α_pert values around 0.22–0.30. At α < 1, the Gamma distribution is monotonically decreasing (no mode) and heavily right-skewed. The lognormal moment-matched approximation (`σ = √(ln(1 + 1/α))`) produces quantiles that diverge from the exact Gamma quantiles — p95 errors of 60–70% at α ≈ 0.30. The contraction direction is correct (more data → tighter σ → tighter Monte Carlo input), but the absolute quantile positions are approximate.
 
-2. **Detection coverage does not affect band contraction.** The pseudo-event count `N = (freq/coverage) × (periods × coverage) / 4 = freq × periods / 4` — coverage cancels algebraically. Coverage correctly affects the **mean** (via Bühlmann Z and adjusted_observed), but the band contracts identically regardless of detection coverage. This is a consequence of the derivation, not a bug: coverage changes the estimated true rate (shifting the band center) but does not change the number of raw observed events.
+2. **Detection coverage acts on the band only through the detected count, and is treated as exact.** N is the number of events actually detected (`annualized_frequency` is the raw detected rate, before coverage adjustment). In a Gamma–Poisson update the shape grows by the detected count and the exposure by coverage × time, so for a given count coverage carries no information about precision: it moves the **centre** (via Bühlmann Z, where effective_n = periods × coverage, and adjusted_observed), not the width. For a fixed true rate, lower coverage means fewer detections and therefore less contraction. The cap applies to the quarters counted, so it does not change this. The limitation: coverage is a single number, taken as known. In practice it is itself an estimate, and its uncertainty should widen the band (an error in coverage scales the adjusted rate by the same factor); this is not modelled. Treat a low or rough coverage figure as making the result less precise than the band shows.
 
 3. **Zero observed events do not contract the band.** When the observed rate is zero, N = 0 and α_post = α_pert, so σ_post = σ_prior — the multiplicative spread (high/low ratio) stays fixed. The **absolute** band does contract because the Bühlmann blend shifts the mean toward zero, but the relative uncertainty is unchanged. This is correct Bayesian behavior: the CV of a Gamma distribution (1/√α) depends only on the event count, not the exposure time.
 
@@ -1022,13 +1043,66 @@ This means the system is not a single Bayesian model — it draws on Gamma-Poiss
 
 5. **Extreme input guard.** The engine warns when N > 10 × α_pert (observed pseudo-events overwhelm the prior by an order of magnitude). In this regime, the posterior is dominated by the observation and the prior band is effectively discarded — the output will have a very narrow band centered on the observed rate.
 
-6. **Prior shape α is conservative (contraction is slower than warranted).** The formula `σ_prior = (ln(high) − ln(low)) / (2 × 1.645)` treats `positioned_low` and `positioned_high` as the p5/p95 of a lognormal. They are actually products of PERT support bounds (p0/p100) across all multiplier factors — the absolute worst/best-case corners of the parameter space. The actual p5/p95 range is ~1.7× narrower for a single PERT factor and ~2.7× narrower for a product of three. This inflates σ_prior by roughly 1.7–2.7×, making α_pert 3–7× smaller than warranted (e.g. 0.30 instead of ~1–3 for the credential vector). The practical effect: contraction is ~3× slower than a properly calibrated Gamma update would produce — 5 years at rate 0.05 gives 16% contraction versus ~35–40% with corrected α. This is the **conservative direction**: the system requires more evidence before narrowing bands, so it is never overconfident from premature contraction. The proper fix is to moment-match the product of PERT distributions analytically (compute E[∏Xᵢ] and Var[∏Xᵢ] from individual PERT moments, then fit a lognormal), which would give σ_prior that reflects actual uncertainty rather than extreme-corner bounds.
+6. **Prior shape α is conservative (contraction is slower than warranted).** The formula `σ_prior = (ln(high) − ln(low)) / (2 × 1.645)` treats `positioned_low` and `positioned_high` as the p5/p95 of a lognormal. They are actually products of PERT support bounds (p0/p100) across all multiplier factors — the absolute worst/best-case corners of the parameter space. The actual p5/p95 range is ~1.7× narrower for a single PERT factor and ~2.7× narrower for a product of three. This inflates σ_prior by roughly 1.7–2.7×, making α_pert 3–7× smaller than warranted (e.g. 0.38 instead of ~1–3 for the credential vector). The practical effect: contraction is ~3× slower than a properly calibrated Gamma update would produce (before the 1.2.0 cap, 5 years at rate 0.05 gave 16% contraction versus ~35–40% with corrected α; with the cap it gives 4.3% at full coverage). This is the **conservative direction**: the system requires more evidence before narrowing bands, so it is never overconfident from premature contraction. The proper fix is to moment-match the product of PERT distributions analytically (compute E[∏Xᵢ] and Var[∏Xᵢ] from individual PERT moments, then fit a lognormal), which would give σ_prior that reflects actual uncertainty rather than extreme-corner bounds.
 
-7. **Aggregate lognormal understates the median by ~20%.** The aggregate positioned_median is the sum of four per-vector lognormal medians. For right-skewed distributions, median(X₁+X₂+…+Xₙ) > Σ median(Xᵢ). Monte Carlo simulation shows the sum-of-medians understates the true aggregate median by ~20% and overstates σ by ~30%, producing a fitted lognormal that is shifted left and wider than the true sum distribution. The tail risk (P95) is overstated by ~30% — again the **conservative direction** for a risk tool. The proper fix is the Fenton-Wilkinson approximation: match the first two moments of the sum of lognormals to a single lognormal. This requires storing per-vector μ and σ on VectorEstimate and replacing the current `sum + from_median_and_range` aggregation with moment-matched fitting. The current approach is retained because: (a) the cross-vector dampening (k=0.85) is already an empirical correction for dependence that partially compensates, (b) the fitted lognormal's P5/P95 are derived from the aggregate bounds and are roughly correct even though the median is off, and (c) overstating tail risk is preferable to understating it in a security risk context.
+7. **Aggregate lognormal: dependence between vectors.** The aggregate lognormal is centred on the positioned total, the sum of the vector medians × cross-vector dampening (§2A Step 9). That is right when the vectors' uncertainty is common (they share one base rate). If the vectors were independent, the median of their sum would be higher: Fenton-Wilkinson (`LognormalParams.fenton_wilkinson()`, added in 1.2.0 and tested against a Monte Carlo sum) puts it 1.35–1.72× above the positioned total on 24 test profiles. The truth lies between the two; the engine takes the dependent case, which matches the headline TEF and what `fair_risk_engine_inputs()` hands on.
 
-8. **Sensitivity analysis does not vary credibility parameters.** When telemetry is present, the sensitivity analysis varies population-model parameters (base rate, dampening coefficients) but not credibility-specific parameters (k values, detection coverage, observation periods). With telemetry, the estimate is partially anchored to the observed rate, so base_rate sensitivity drops (e.g. from 10× to 3×). The sensitivity output correctly shows this reduced dependence on the prior, but does not reveal the new dominant uncertainty sources — particularly detection coverage and the credibility k — which are now the parameters that would most change the output if varied.
+8. **Sensitivity analysis varies credibility k but not detection coverage.** When telemetry is present, the sensitivity analysis varies population-model parameters (base rate, dampening coefficients) and, since 1.2.0, each observed vector's credibility k over its `k_sensitivity` range. With telemetry, the estimate is partially anchored to the observed rate, so base_rate sensitivity drops (e.g. from 10× to 3×). Detection coverage and observation periods are still not varied, and with low coverage they can be the parameters that would most change the output. (Before 1.2.0 the k sweep was listed but had no effect: the blender read the global config instead of the swept one. Fixed; k entries are ranked by spread, max/min, because a higher k lowers the output.)
 
 9. **Within-vector dampening is applied before credibility blending.** The credibility prior is the dampened population estimate, not the raw (undampened) composite. This is intentional: dampening corrects for correlated multipliers (a known population-model artifact), and the corrected estimate is our best belief about the population rate. Using the undampened value as the prior would violate the Bühlmann framework assumption that the prior is the true population mean, and would create a discontinuity at the telemetry boundary — providing telemetry that confirms the population rate would paradoxically increase the estimate from the dampened to the undampened value. The practical effect is that for organizations with high population risk factors and clean telemetry, both adjustments push in the same direction (down), yielding a lower estimate than blending from the undampened prior would. This is correct: the prior was overstated, and the telemetry confirms a lower rate.
+
+### 8.7 Dispersion (Burstiness Over Time)
+
+*Added in 1.2.0.* The TEF is a rate. Downstream simulations draw event counts from it, usually as Poisson. Public monthly series reject Poisson: counts are burstier than a fixed rate allows. The estimator now exports a dispersion parameter for that.
+
+**Model: a Gamma-mixed rate.** In a given year the rate is the TEF rate λ times a shared shock G ~ Gamma(shape, scale = 1/shape), so E[G] = 1 and the mean is unchanged. Counts given λG are Poisson, so the annual count is negative binomial:
+
+    E[N] = λ,  Var[N] = λ + λ²/shape,  VMR = 1 + λ/shape
+
+This is a mixture over the *rate*, not a model of inter-arrival times. (Earlier drafts of the 1.2.0 notes called it "NegBin inter-arrival"; that was wrong. For Gamma inter-arrival times shape 1 is Poisson and larger shapes are more regular, the opposite reading.)
+
+**Not credibility k.** k (§8.3) measures how much rates differ *between* organizations: the heterogeneity cross-organization data like IRIS shows. A sum of organizations that each have a fixed rate is still Poisson in time, so a global time series cannot see k. The dispersion shape measures how *one* organization's rate is shaken in time by shocks it shares with others (campaign waves, mass exploitation). The two are separate and add up.
+
+**Defaults** (`config.yaml` → `dispersion`). Fitted on monthly series: KEV on Jan 2023–May 2026 (41 months, the 2022 back-fill excluded, the same window the timescale analysis rests on; `scripts/dispersion_timescale_check.py`), ransomware on Jun 2025–May 2026 by the companion notebook (run 2026-10-16, https://gist.github.com/lauravoicu/5089edfa1673202af60add2f8272247b). The article's 12-month KEV fit was 46.4 (raw 23.0). "Detrended" is an NB2 regression with a time trend; "raw" is the method of moments, which absorbs the trend and is kept as the sensitivity bound.
+
+| Applies to | Series | r detrended (default) | r raw (sensitivity) |
+|---|---|---|---|
+| Exploitation vector | CISA KEV new entries, Jan 2023–May 2026 | 21.6 | 13.3 |
+| Ransomware scenario total | Ransomware.live leak-site postings, Jun 2025–May 2026 | 129.7 | 34.9 |
+| Credential, phishing, supply chain; BEC, exfiltration, web app totals | none public | Poisson | — |
+
+Caveats:
+- KEV counts vulnerabilities CISA newly added to the catalog, not attacks; `dateAdded` is the listing date, not when exploitation began.
+- Leak-site postings come in batches. Batching inflates dispersion, so r is on the low (conservative) side.
+- The series are population-level. They see the shared part of burstiness and almost none of the part that belongs to one organization.
+- KEV ransomware-associated CVEs fit r = 7.6 detrended (2.2 raw). With so few entries that's a sensitivity reference only, not a default.
+
+**Timescale: how long a shock lasts.** r is fitted on monthly counts. If each month's shock is independent, the annual multiplier is the mean of 12 independent Gamma(r) shocks, which is Gamma(12r): annual shape = 12r. If one shock persists all year, annual shape = r. The difference is about twelvefold, so it is a setting (`dispersion.timescale`), not a hidden assumption.
+
+**Default `month`** (annual shape = 12r); `year` is the cautious alternative. The full analysis is in [dispersion-timescale.md](dispersion-timescale.md), reproducible with `scripts/dispersion_timescale_check.py`. In short:
+- Once the 2022 catalogue back-fill is excluded, KEV's detrended monthly residuals show no carry-over (Ljung-Box p = 0.89–0.99, 2023–2026 and 2024–2026, linear or quadratic trend).
+- Fitting the shape on quarterly instead of monthly counts gives 3.6–4.4 times the monthly r. Independent months predict about 3; a shock that persists through the quarter predicts about 1.
+- The only significant carry-over (2022–2026 with a linear trend, p = 0.03) disappears with a quadratic trend. It comes from the back-fill regime, not from threat activity.
+
+**When it matters.** Annual loss P99 relative to Poisson, at the same mean frequency, lognormal severity (median \$300K, P95 \$4M), FFT closed form checked against simulation:
+
+| Events per year | r 46 | r 26 | r 2.2 (raw KEV ransomware, upper bound) |
+|---|---|---|---|
+| 1 | +0.2% | +0.3% | +3.5% |
+| 5 | +0.4% | +0.8% | +9.7% |
+| 50 | +1.9% | +3.4% | +44% |
+
+For a single organization with a few events a year the effect is minor; heavy loss magnitudes dominate the tail. It matters for frequent events (threat-event level, telemetry-scale counts) and for portfolios.
+
+**Output.** `TEFResult.dispersion` holds `DispersionParams` for the scenario total and for each vector. `to_dict()["analysis"]["dispersion"]` exports `shape_r_month`, `raw_shape_r_month`, `timescale`, `annual_shape`, `basis`, `source` and `vmr_at_median`. `TEFResult.sample_annual_counts()` draws counts in three steps: the rate from the TEF lognormal (uncertainty about the rate), then the Gamma shock (variability over time), then a Poisson count. The rate estimate itself is unchanged by dispersion.
+
+**Tests.** `tests/test_dispersion.py`:
+- the sampler against scipy's `nbinom` (chi-square)
+- the Poisson limit
+- 12 independent monthly shocks giving 12r
+- validation and config round trip
+- the output fields
+- a numpy FFT closed form of the annual loss checked against the sampler at P99 (λ = 1, 5, 50; r = 2.2)
 
 ---
 
@@ -1064,7 +1138,8 @@ This means the system is not a single Bayesian model — it draws on Gamma-Poiss
 - **`full_report()`**: Complete text report (Tier 3). All sections.
 - **`brief_report()`**: Tier 1 summary. Fits on one slide.
 - **`to_dict()`**: JSON-serializable dict with all three tiers.
-- **Individual sections**: `vector_breakdown_text()`, `distribution_text()`, `credibility_text()`, `plain_language_summary()`.
+- **Individual sections**: `vector_breakdown_text()`, `distribution_text()` (ends with the fair-risk-engine line), `credibility_text()`, `dispersion_text()`, `fair_risk_engine_text()`, `plain_language_summary()`.
+- **For simulation**: `sample_annual_counts()` (annual event counts), `fair_risk_engine_inputs()` (the `FAIRInputs` TEF fields).
 
 ### 9.3 Plain Language Summary Template
 
@@ -1111,18 +1186,20 @@ Each vector engine records every arithmetic step:
 ```
 EXPLOITATION VECTOR -- Calculation Trace
 ----------------------------------------------------------------------
-  = IRIS overall floor              0.00465   IRIS 2025 observed LEF
-  x Exploitation proportion         0.22000   IR report vector split
-  x Sector adjustment               1.65900   IRIS x Ransomware share
-  = Base rate (mode)                 0.01000   Three-anchor consensus
-  x Exploitation proportion          0.22000   Vector split
-  x Sector multiplier               1.65900   IRIS x scenario share
-  x Revenue multiplier               0.80000   IRIS x scenario share
-  x Vulnerable VPN vendor            1.40000   At-Bay 2025
-  x Geography                        1.20000   IRIS geo distribution
-  = Raw composite                    2.22000   Product of all multipliers
-  dampened() Dampened composite      1.85400   k=0.70, max=5.0
-  = Positioned mode                  0.00408   base x proportion x dampened
+    = IRIS overall floor         0.00465   IRIS 2025 observed LEF
+    x Exploitation proportion    0.26000   IR report vector split
+    x Sector adjustment          1.65710   IRIS x Ransomware share
+    = Ceiling (edge device)   1000.00000   DShield tempo [assumption]
+    = Base rate (mode)           0.03000   Three-anchor consensus
+    x Exploitation proportion    0.26000   Vector split
+    x Sector multiplier          1.65710   IRIS x scenario share
+    x Revenue multiplier         1.21136   IRIS x scenario share
+    x Vulnerable VPN vendor      1.40000   At-Bay 2025
+    x Geography                  1.20000   IRIS geo distribution
+    = Raw composite              3.37232   Product of all multipliers
+  dampened() Dampened composite         2.66063   k=0.7, max=5.0
+    = Positioned median          0.02075   base x proportion x dampened
+  max() Floor enforcement          0.00200   IRIS observed lower bound
 ```
 
 An analyst can substitute their own number at any step and trace the impact downstream.
@@ -1141,11 +1218,11 @@ This is a deliberate design choice: TEF estimates how often adversaries TRY, not
 
 ## Appendix: Test Coverage
 
-250 tests across 8 test files covering:
+314 tests covering:
 - Engine core: estimation, comparison, sensitivity, warnings, floor enforcement
 - All four vector engines: correct multiplier application, floor/ceiling bounds
 - Triangulation: consensus computation, convergence, analyst deviation warning
-- Credibility blending: blend formula, credibility growth, coverage adjustment, k overrides, engine integration, posterior band contraction (monotonic narrowing with observation volume)
+- Credibility blending: blend formula, credibility growth, coverage adjustment, k overrides, engine integration, posterior band contraction (non-increasing with observation volume; band-hardening limits)
 - Custom scenarios: validation, protocol compliance, optional fields, engine integration, template generation
 - Distributions: PERT parameterization, lognormal fitting, dampening math
 - Profile: validation, derived properties, summary rendering
@@ -1237,6 +1314,11 @@ User overrides are deep-merged with bundled defaults — omitted keys retain the
 - `susceptibility_prior`: low/mode/high (population-level LEF→TEF conversion)
 - `dampening`: factor_k, vector_k, max_composite
 - `credibility_k`: per-vector structural parameters (exploitation, credential, phishing, supply_chain)
+- `k_sensitivity`: sweep ranges for the per-vector k sensitivity
+- `band_hardening`: `min_sigma_ratio`, `coverage_leverage_cap`
+- `exploitation_ceilings`: per-class exploitation ceilings and their basis labels
+- `dispersion`: timescale, basis, and the fitted shapes per vector and scenario (§8.7)
+- `revenue_per_employee`: by sector, for inferring headcount
 
 ### Custom Base Rate
 

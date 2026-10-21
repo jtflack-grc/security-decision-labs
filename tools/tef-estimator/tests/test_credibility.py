@@ -103,10 +103,12 @@ class TestCredibilityBlender:
         assert isinstance(result, BlendResult)
         assert result.prior == 0.005
         assert result.adjusted_observed == 0.01
-        # Z = 6 / (6 + 6.0) = 0.5
-        assert abs(result.credibility_z - 0.5) < 0.01
-        # blended = 0.5 * 0.01 + 0.5 * 0.005 = 0.0075
-        assert abs(result.blended - 0.0075) < 0.0001
+        # Z = 6 / (6 + 6.0) = 0.5 (exploitation k=6, asserted)
+        assert abs(result.credibility_z - 6.0 / 12.0) < 0.01
+        # blended = Z * 0.01 + (1-Z) * 0.005
+        expected_z = 6.0 / 12.0
+        expected_blend = expected_z * 0.01 + (1 - expected_z) * 0.005
+        assert abs(result.blended - expected_blend) < 0.0001
 
     def test_credibility_increases_with_periods(self):
         blender = CredibilityBlender()
@@ -335,7 +337,7 @@ class TestEngineWithCredibility:
 
 
 class TestPosteriorBandContraction:
-    """Gamma-inspired posterior band contraction (Section 5 fix)."""
+    """Gamma-inspired posterior band contraction."""
 
     def _make_profile(self, **overrides):
         defaults = dict(
@@ -496,7 +498,9 @@ class TestPosteriorBandContraction:
         sigma_prior = (math.log(cred_base.positioned_high)
                        - math.log(max(cred_base.positioned_low, 1e-10))) / (2 * 1.645)
 
-        expected = [(4, 0.05, 0.04), (8, 0.05, 0.08), (20, 0.05, 0.16), (40, 0.10, 0.38)]
+        # Contraction values band hardening (eff_n capped at 5.0):
+        # 20Q and 8Q produce identical contraction because both are capped at eff_n=5
+        expected = [(4, 0.05, 0.04), (8, 0.05, 0.047), (20, 0.05, 0.047), (40, 0.10, 0.087)]
         for quarters, rate, expected_contraction in expected:
             telem = OrgTelemetry(observations=[
                 VectorObservation(

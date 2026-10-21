@@ -35,7 +35,9 @@ tef-estimator estimate [OPTIONS]
 | `--supply-chain` | bool | False | Significant supply chain provider role? |
 | `--recent-ma` | bool | False | Merger or acquisition in last 18 months? |
 | `--base-rate` | float | None | Override the triangulated base rate (annual probability) |
-| `--scenario` | Enum | `ransomware` | Threat scenario: `ransomware` or `bec` |
+| `--scenario` | Enum | `ransomware` | Threat scenario: `ransomware`, `bec`, `exfiltration`, `web_app` or `custom` |
+| `--scenario-file` | Path | None | JSON file defining a custom scenario (with `--scenario custom`) |
+| `--telemetry` | Path | None | JSON file with your organization's vector observations, for Bühlmann blending |
 | `--json` | bool | False | Output as JSON (all three tiers) |
 | `--brief` | bool | False | Tier 1 summary only |
 | `--full` | bool | False | Tier 3 full audit trail |
@@ -63,7 +65,7 @@ tef-estimator estimate --sector manufacturing --revenue 100m_1b --geo us \
 tef-estimator estimate --sector financial --revenue 100m_1b --geo us --scenario bec
 
 # Override base rate
-tef-estimator estimate --sector healthcare --revenue 1b_10b --geo eu \
+tef-estimator estimate --sector healthcare --revenue 1b_10b --geo western_europe \
     --base-rate 0.02
 
 # JSON output for programmatic use
@@ -84,7 +86,7 @@ Print the full calculation trace for every vector. Equivalent to `estimate --ful
 tef-estimator explain [OPTIONS]
 ```
 
-Takes the same profile options as `estimate` plus `--scenario` and `--output` / `-o`. Always outputs Tier 3 (or writes markdown if `--output` is given).
+Takes the profile options of `estimate` (`--sector`, `--revenue`, `--geo`, `--remote-access`, `--employees`, `--critical-infra`, `--supply-chain`, `--recent-ma`, `--base-rate`) plus `--scenario`, `--scenario-file` and `--output` / `-o`; it has no `--json`, `--brief`, `--full` or `--telemetry`. Always outputs Tier 3 (or writes markdown if `--output` is given).
 
 #### Example
 
@@ -102,7 +104,7 @@ tef-estimator compare [OPTIONS]
 
 #### Profile A Options
 
-Same as `estimate`: `--sector`, `--revenue`, `--geo`, `--remote-access`, `--employees`.
+`--sector`, `--revenue`, `--geo`, `--remote-access`, `--employees`. Also `--scenario`, `--scenario-file` and `--json`, which apply to both profiles.
 
 #### Profile B Options
 
@@ -143,7 +145,7 @@ Rank input parameters by contribution to output variance. Varies each parameter 
 tef-estimator sensitivity [OPTIONS]
 ```
 
-Takes the same profile options as `estimate` plus `--scenario` and `--json`.
+Takes `--sector`, `--revenue`, `--geo`, `--remote-access` and `--employees`, plus `--scenario`, `--scenario-file` and `--json`. It has no `--critical-infra`, `--supply-chain`, `--recent-ma`, `--base-rate` or `--telemetry`.
 
 #### Example
 
@@ -156,16 +158,16 @@ Output:
 ```
 SENSITIVITY ANALYSIS
 ============================================================
-Baseline TEF: 0.01245 (1.24%)
+Baseline TEF: 0.03651 (3.65%)
 
 Parameter                 Low          High            Range
 ------------------------------------------------------------
-base_rate                 0.00771    0.03112    4.0x
-vector_k                  0.01025    0.01465    1.4x
-factor_k                  0.01125    0.01425    1.3x
+base_rate                 0.01217    0.12169    10.0x
+vector_k                  0.03006    0.04295    1.4x
+factor_k                  0.03300    0.04177    1.3x
 ```
 
-The `Range` column shows how many times the output changes when that parameter moves from low to high. Base rate at 4.0x dominates — refining the base rate is the highest-value data improvement.
+The `Range` column shows how many times the output changes when that parameter moves from low to high. Base rate at 10.0x dominates — refining the base rate is the highest-value data improvement.
 
 ### data
 
@@ -223,6 +225,24 @@ tef-estimator refresh check
 ```
 
 To update reference data, replace the `extracted.json` files under `src/tef_estimator/data/reference/`.
+
+#### refresh snapshot
+
+Fetch API data (DShield, KEV, EPSS, Ransomware.live).
+
+#### refresh full
+
+Full refresh: `snapshot`, then `check`.
+
+### scenario
+
+Custom scenario management.
+
+```bash
+tef-estimator scenario template [OUTPUT]   # write a starter JSON (default: custom_scenario.json)
+tef-estimator scenario validate PATH       # check a scenario file before use
+tef-estimator estimate --scenario custom --scenario-file PATH
+```
 
 ### telemetry
 
@@ -342,7 +362,7 @@ The web UI has three tabs:
 
 **Estimate tab:**
 - Sidebar with all profile inputs (sector, revenue, geography, remote access, employees)
-- Scenario selector (Ransomware, BEC, plus any custom scenarios from `~/.tef-estimator/scenarios/`)
+- Scenario selector (Ransomware, BEC, Data Exfiltration, Web App Exploitation, plus any custom scenarios from `~/.tef-estimator/scenarios/`)
 - Live Tier 1 display: annual probability, recurrence, peer percentile, vector breakdown chart
 - Expandable Tier 2: distribution parameters, per-vector breakdown, sensitivity tornado chart
 - Compare mode: toggle a second profile panel for side-by-side comparison
@@ -457,14 +477,14 @@ The input to the estimation engine. Represents the organization being assessed. 
 profile = OrganizationProfile(
     sector=Sector.FINANCIAL,
     revenue_band=RevenueBand.R_1B_10B,
-    geography=Geography.EU,
+    geography=Geography.WESTERN_EUROPE,
     remote_access=[RemoteAccessType.CISCO, RemoteAccessType.RDP],
     employee_count=5000,
     supply_chain_provider=True,
 )
 
 print(profile.summary())
-# "Financial | 1B–10B | Eu | VPN: cisco, rdp | ~5,000 employees"
+# "Financial | 1B–10B | Western Europe | VPN: cisco, rdp | ~5,000 employees"
 
 print(profile.has_vulnerable_vpn_vendor)  # True (Cisco)
 print(profile.has_large_email_footprint)  # True (5000 >= 1000)
@@ -545,7 +565,7 @@ The complete estimation output. Provides three tiers of access plus rendering me
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `scenario_name` | `str` | "Ransomware" or "Business Email Compromise" |
+| `scenario_name` | `str` | "Ransomware", "Business Email Compromise", "Data Exfiltration", "Web Application Exploitation" or a custom name |
 | `profile_summary` | `str` | Human-readable profile description |
 | `vectors` | `list[VectorEstimate]` | Per-vector estimation results |
 | `total_positioned_median` | `float` | The main TEF number (annual probability) |
@@ -559,23 +579,37 @@ The complete estimation output. Provides three tiers of access plus rendering me
 | `peer_percentile` | `int \| None` | Percentile within revenue band peers |
 | `annual_probability_pct` | `str` | Formatted: "2.1%" |
 | `median_recurrence_years` | `float` | 1 / positioned_median |
+| `dispersion` | `dict` | `{"total": DispersionParams, "vectors": {key: DispersionParams}}` (1.2.0) |
+| `total_dispersion` | `DispersionParams \| None` | Dispersion of the scenario total |
+| `has_dispersion` | `bool` | True when any non-Poisson shape is set |
+
+`sample_annual_counts(size=10_000, rng=None)` returns annual event counts: rate from the lognormal, then the dispersion shock, then Poisson. `dispersion_text()` renders the dispersion block shown in `full_report()`.
+
+`fair_risk_engine_inputs(basis="detrended")` returns the TEF fields for fair-risk-engine's `FAIRInputs`: `tef_model='lognormal'`, `tef_p10`, `tef_p50`, `tef_p90` (read off `lognormal`; the positioned low/high are about P5/P95, not P10/P90) and `tef_dispersion` (the total annual shape, `None` for Poisson). `basis="raw"` returns the trend-included shape, the sensitivity bound. `fair_risk_engine_text()` renders the same as one line, printed in `full_report()` and the UI.
+
+```python
+from fair_risk_engine import FAIRCalculator, FAIRInputs
+inputs = FAIRInputs(**result.fair_risk_engine_inputs(), susc_p10=20, susc_p50=40, susc_p90=70,
+                    response_p10=20_000, response_p50=75_000, response_p90=250_000)
+```
 
 #### Three-Tier Access
 
 ```python
 # Tier 1: Summary (for slides and executives)
 summary = result.summary
-summary.positioned_median      # 0.021
-summary.annual_probability_pct  # "2.1%"
-summary.recurrence_years     # 47.0
-summary.peer_percentile      # 100
-summary.vector_bar           # [{"vector": "Credential", "share": 0.56}, ...]
+summary.positioned_median      # 0.0621
+summary.annual_probability_pct  # "6.2%"
+summary.recurrence_years     # 16.1
+summary.peer_percentile      # set by the CLI and UI; None from engine.estimate() alone
+                             # (call tef_estimator.peer.compute_and_set_percentile(result, revenue_band, load_grid(path)))
+summary.vector_bar           # [{"vector": "Exploitation", "share": 0.28}, ...]
 summary.one_sentence         # Board-ready plain language
 
 # Tier 2: Analysis (for the analyst)
 analysis = result.analysis
-analysis.lognormal           # LognormalParams(mu=-3.86, sigma=0.83, ...)
-analysis.pert                # PERTRange(0.008, 0.021, 0.119)
+analysis.lognormal           # LognormalParams(mu=-2.778, sigma=1.263)
+analysis.pert                # PERTRange(0.0077, 0.0621, 0.492)
 analysis.vectors             # List[VectorEstimate]
 
 # Tier 3: Audit (for the reviewer/challenger)
@@ -663,7 +697,7 @@ print(rw.base_rate_triangulation["consensus"])   # PERTRange(0.01, 0.03, 0.10)
 print(bec.base_rate_triangulation["consensus"])  # PERTRange(0.04, 0.10, 0.25)
 
 # Compare vector proportions
-print(rw.vector_proportions["credential"].mode)  # ~0.52
+print(rw.vector_proportions["credential"].mode)  # ~0.48
 print(bec.vector_proportions["phishing"].mode)   # ~0.65
 
 # Scenario-adjusted sector multiplier
@@ -688,8 +722,8 @@ scenario = RansomwareScenario()
 anchors, consensus = extract_anchors(scenario.base_rate_triangulation)
 result = triangulate(anchors, actual_consensus=consensus)
 
-print(result.suggested)           # PERTRange(0.01, 0.03, 0.10)
-print(result.convergence_ratio)   # 3.0
+print(result.suggested)           # PERTRange(0.005, 0.0333, 0.0833)
+print(result.convergence_ratio)   # 4.0
 print(result.is_convergent)       # True
 for line in result.validation:
     print(line)
@@ -714,7 +748,7 @@ cfg = get_config()
 # Access parameters
 print(cfg.susceptibility_prior.mode)  # 0.20
 print(cfg.dampening.vector_k)        # 0.85
-print(cfg.credibility_k.exploitation) # 6.0
+print(cfg.credibility_k.exploitation) # 6.0 (asserted; see technical reference §8.3)
 
 # Override programmatically
 from tef_estimator.config import SusceptibilityPrior
@@ -757,6 +791,31 @@ print(base_rate.mode)  # 0.03
 print(base_rate.high)  # 0.10
 ```
 
+### DispersionParams
+
+*1.2.0.* Burstiness of the rate over time (Gamma-mixed rate, negative binomial counts). See technical reference §8.7.
+
+```python
+from tef_estimator.distributions import DispersionParams, sample_annual_counts
+
+d = DispersionParams(shape_r=21.6, timescale="year", basis="detrended",
+                     source="CISA KEV, Jan 2023-May 2026", raw_shape_r=13.3)
+d.annual_shape        # 21.6 ("month" would give 259.2 = 12 r)
+d.vmr(5.0)            # 1 + 5/21.6
+d.as_raw()            # the raw fit, for sensitivity
+sample_annual_counts(rates, d, rng)   # rates: array of annual rates
+```
+
+| Field | Meaning |
+|---|---|
+| `shape_r` | Monthly Gamma shape; `None` = Poisson |
+| `timescale` | `"month"` (default; independent months, annual shape 12 r) or `"year"` (shock lasts all year, annual shape r) |
+| `basis` | `"detrended"` or `"raw"` |
+| `source` | Citation, required when `shape_r` is set |
+| `raw_shape_r` | Raw fit kept as the sensitivity bound |
+
+`TEFConfig.dispersion_for(kind, name)` resolves a configured entry (`kind` = `"vectors"` or `"scenarios"`). `TEFConfig.from_yaml(path)` loads a config file; keys it leaves out fall back to the bundled defaults.
+
 ### LognormalParams
 
 **Module:** `tef_estimator.distributions`
@@ -767,15 +826,15 @@ Fitted lognormal distribution parameters. The recommended distribution for Monte
 from tef_estimator.distributions import LognormalParams
 
 ln = result.lognormal
-print(ln.mu)      # -3.858 (ln-space mean)
-print(ln.sigma)   # 0.831 (ln-space std dev)
-print(ln.median)  # 0.021
-print(ln.p5)      # 0.005 (5th percentile)
-print(ln.p95)     # 0.083 (95th percentile)
-print(ln.mean)    # 0.030 (arithmetic mean, higher than median)
+print(ln.mu)      # -2.778 (ln-space mean)
+print(ln.sigma)   # 1.263 (ln-space std dev)
+print(ln.median)  # 0.062 (the positioned median)
+print(ln.p5)      # 0.0078 (5th percentile)
+print(ln.p95)     # 0.496 (95th percentile)
+print(ln.mean)    # 0.138 (arithmetic mean, higher than median)
 
 # Sample for Monte Carlo
-samples = ln.sample(n=10000)  # numpy array of 10,000 draws
+samples = ln.sample(size=10000)  # numpy array of 10,000 draws
 ```
 
 ### Telemetry
@@ -919,10 +978,9 @@ RevenueBand.OVER_100B
 from tef_estimator.data.common import Geography
 
 Geography.US
-Geography.EU
-Geography.UK
-Geography.APAC
-Geography.GLOBAL
+Geography.WESTERN_EUROPE
+Geography.ASIA_PACIFIC
+Geography.OTHER
 ```
 
 #### RemoteAccessType
@@ -935,7 +993,6 @@ RemoteAccessType.FORTINET
 RemoteAccessType.CISCO
 RemoteAccessType.PALO_ALTO
 RemoteAccessType.CITRIX
-RemoteAccessType.IVANTI
 RemoteAccessType.SONICWALL
 RemoteAccessType.OTHER_VPN
 RemoteAccessType.RDP

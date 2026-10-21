@@ -1,5 +1,66 @@
 # Changelog
 
+## [1.2.0] - 2026-10-21
+
+### Added
+- **Dispersion: burstiness of the rate over time** — `DispersionParams` and `sample_annual_counts()` in `distributions.py`. The model is a Gamma-mixed **rate**, so annual counts are negative binomial with VMR = 1 + λ/r. It is not a model of inter-arrival times. It is separate from credibility k: k = how rates differ between organizations; r = how one organization's rate is shaken in time by shared shocks.
+  - Defaults in `config.yaml` → `dispersion` are set only where a public series supports them: exploitation vector r = 21.6 (CISA KEV new entries, Jan 2023–May 2026, 41 months, 2022 back-fill excluded); ransomware scenario total r = 129.7 (Ransomware.live, Jun 2025–May 2026). Both are detrended monthly fits (linear trend), with the raw fits (13.3 / 34.9) kept as the sensitivity bound. KEV uses the longer window because the timescale analysis rests on it and 12 months has little power; the 12-month fit (46.4, raw 23.0) is documented in `docs/dispersion-timescale.md`. Credential, phishing, supply chain and the other scenarios stay Poisson.
+  - `dispersion.timescale` sets how long a shock lasts: `month` (default; independent monthly shocks, annual shape = 12 r) or `year` (cautious alternative; annual shape = r). Evidence: KEV residuals show no month-to-month carry-over once the 2022 back-fill is excluded, and quarterly shapes are 3.6–4.4× the monthly ones. Full analysis in `docs/dispersion-timescale.md`, reproducible with the new `scripts/dispersion_timescale_check.py`.
+  - Output: `TEFResult.dispersion`, `total_dispersion`, `sample_annual_counts()`; `to_dict()["analysis"]["dispersion"]` (shape, timescale, annual shape, basis, source, VMR at the median); a DISPERSION block in `full_report()`; a Dispersion panel in the UI (shape, annual shape, VMR at your rate, basis, with each fitted series' source shown under the table).
+  - **Dispersion itself changes no estimate**: every positioned median, band and lognormal is identical with and without it (24-case snapshot across ransomware, BEC, exfiltration and web-app scenarios, with and without telemetry). Other 1.2.0 changes do move estimates: see **Changed (estimates move)**.
+  - **Hand-off to fair-risk-engine:** `TEFResult.fair_risk_engine_inputs(basis="detrended")` returns the `FAIRInputs` fields for fair-risk-engine (1.1.0): `tef_model='lognormal'`, `tef_p10/p50/p90` read off this lognormal, and `tef_dispersion` = the total annual shape (None for Poisson); `basis="raw"` gives the trend-included bound. The same line is printed under DISTRIBUTION PARAMETERS in `full_report()` and shown under Distribution Parameters in the UI. The positioned low/high are about P5/P95, so they are not fair-risk-engine's P10/P90; `LognormalParams.p10` and `.p90` added.
+- **Data exfiltration scenario** and **web application exploitation scenario** — `ExfiltrationScenario`, `WebAppScenario` (`data/scenarios/exfiltration.*`, `web_app.*`). Selectable in the CLI (`--scenario exfiltration` / `web_app`) and the UI scenario dropdown. No peer grid yet, so no peer percentile; dispersion is Poisson (no fitted series).
+- **Per-vector credibility k sweep** — sensitivity analysis sweeps each observed vector's credibility k when telemetry is present, in addition to the base-rate and dampening sweeps.
+- **Exploitation vector config-driven ceilings** — `exploitation_ceilings` in `TEFConfig` with per-class ceilings (edge_device, cloud_primary, default) and basis labels.
+- **Config module** — `TEFConfig` dataclass with `from_dict()` / `to_dict()` / `from_yaml()` for full config round-tripping, including `BandHardeningParams`, `ExploitationCeilingParams`, `k_sensitivity` and `dispersion`.
+
+- **`LognormalParams.fenton_wilkinson()`** — moment-matched sum of lognormals, tested against a Monte Carlo sum. Not used for the total TEF: it treats the vectors as independent, but they share one base rate, so the total lognormal stays centred on the positioned total (with Fenton-Wilkinson its median was 1.35–1.72× the headline TEF on 24 test profiles).
+- **`OrgTelemetry` and `VectorObservation` exported** from `tef_estimator`.
+- **`OrganizationProfile.infer_employee_count()`** and `revenue_per_employee` in `config.yaml` (Damodaran revenue per employee by sector): infers headcount from the revenue band when `employee_count` is not given. Not yet called by the engine.
+
+### Changed (estimates move)
+Compared with 1.1.4, on 24 profiles (manufacturing, financial, healthcare × two revenue bands × with/without remote access × ransomware/BEC), without telemetry the lognormal moves only through the proportions below (median within 2.3%, σ within 2.7%):
+- **Ransomware vector proportions** — exploitation 22 → 26%, credential 52 → 48%, phishing 17 → 15% (modes; DBIR 2026, Mandiant 2026), in `data/reference/beazley/extracted.json`. Ransomware positioned medians move by −1.9 to −2.3%; BEC is unchanged.
+- **Band hardening** — `band_hardening.min_sigma_ratio` (0.25) keeps telemetry from narrowing a band below a quarter of its prior σ; `coverage_leverage_cap` (5.0) caps the observation quarters counted for band contraction, so beyond 5 quarters the band stops narrowing. The pseudo-event count is the events actually detected (detected rate × quarters / 4), so detection coverage acts on the band only through that count: lower coverage means fewer detections and less narrowing, never more. Estimates with more than 5 quarters of telemetry move. Config-driven.
+
+### Removed
+- **`OrganizationProfile.custom_susceptibility_prior`** (unused; use `config.yaml` → `susceptibility_prior`). Passing it now raises a `TypeError`.
+
+### Changed
+- **Version bumped to 1.2.0.**
+- **LognormalParams.from_median_and_range** — precision increased from 3 to 6 decimal places.
+- **ExploitationVector** — constructor accepts a `config` kwarg for exploitation ceilings.
+- **Version never hardcoded** — `tef_estimator.__version__` reports the version of the code actually running: the source tree's own `pyproject.toml` when running from a checkout (including editable installs with stale metadata), otherwise the installed package metadata. The GUI badge uses it (fixes [#2](https://github.com/security-decision-science/security-decision-labs/issues/2)).
+
+### Fixed
+- **Per-vector k sweep had no effect** — the credibility blender read the global config instead of the engine's, so the swept k values were ignored and the low and high outputs were identical. The engine now passes its own k values. k entries are ranked by spread (max/min), because a higher k lowers the output.
+- **Sensitivity sub-engines ignored a custom config** — base-rate and dampening sweeps built their engines from the global config; they now use the engine's config. Results with the default config are unchanged.
+- **Band hardening observability** — a binding `min_sigma_ratio` or `coverage_leverage_cap` now adds a `Band hardening:` entry to `validation_checks`, as well as a warning.
+- **k-sensitivity config** — the per-vector credibility-k sweep ranges come only from `config.yaml` (`k_sensitivity`). The hardcoded fallback in `engine.py` was removed.
+- **`TEFConfig.to_dict()` dropped `k_sensitivity`** — custom sweep ranges are now kept through a round trip.
+- **Compare mode left a stale Profile B card** — switching Compare off in the UI now clears the comparison panel instead of leaving the last rendered result on the page.
+- **Web-app overall-share citation** — `web_app.json` cited "web applications involved in ~26% of breaches" and Edgescan exposure for a value of 10%. The 10% is DBIR 2026's Basic Web Application Attacks pattern (10% of breaches, n = 22,625), so the citation now says that. The badge moves from gray (assumption) to amber, because DBIR counts breaches and the field is used as a share of all incidents. The value is unchanged. The scenario's list of sources still needed drops Edgescan and Cobalt (vulnerability prevalence belongs to susceptibility, not TEF; noted in `_susceptibility_note`) and adds the DBIR web-app pattern by industry and the IRIS public-facing-application share by revenue.
+
+### Corrected: credibility k is asserted, not fitted
+- **What changed:** the `credibility_k` citations in `config.yaml`, and the k tables in the technical reference (§6 parameter table, §8.3). All four k values are now labelled **asserted (judgment)**, and all four values are unchanged from 1.1.4: exploitation 6, credential 10, phishing 10, supply chain 40. (A draft of this release had raised exploitation k to 32 on the strength of the time-series fit below; with that basis gone, it stays at 6.)
+- **Why:** the exploitation k was cited as "fitted" from a negative binomial fit on detrended KEV new entries (r ≈ 18–32), and the credential k as "bounded" by HIBP fits (r ≈ 4.8–6.5). Those fits measure how bursty a rate is *over time*: the dispersion shape r added in this release. k measures how much rates differ *between organizations*, and only cross-organization data (IRIS-type, insurer portfolios) shows that. A global time series can't: organizations that each have a steady rate add up to a Poisson total, however different they are.
+- **Why it matters:** k sets the weight on an organization's own telemetry, Z = n / (n + k). For example, 8 quarters at 50% coverage gives Z = 40% at k = 6 and 29% at k = 10. Until k is fitted, that weight is a judgment call, and the docs now say so.
+- **Also:** the `k_sensitivity` comment is relabelled as judgment ranges. The exploitation sweep now runs from the asserted 6 up to 32, to show what slower credibility would do.
+- **Planned (later release):** fit k from cross-organization data. That is a methods change, and it will move estimates that use telemetry.
+- **Unrelated doc fix:** technical reference limitation 7 still described Fenton-Wilkinson as "deferred". It now describes the dependence assumption behind the total lognormal and what Fenton-Wilkinson would give instead.
+
+### Tests
+- 317 passed, 0 failures. New: `tests/test_dispersion.py` (35, including the fair-risk-engine hand-off, an exact scipy `nbinom` check and an FFT closed form of the annual loss checked against simulation) and `tests/test_release_1_2_0.py` (33: band hardening incl. coverage not narrowing the band, the total lognormal centred on the headline, Fenton-Wilkinson, k sweep, ceilings, config, version resolution order, new scenarios incl. CLI/UI, refresh script).
+
+---
+
+## [1.1.4] - 2026-07-01
+
+### Changed
+- **Packaging only:** version and PyPI project URLs (Homepage, Documentation, Issues point to `security-decision-labs`). The code is identical to 1.1.3. Published on PyPI; the source was not committed.
+
+---
+
 ## [1.1.3] - 2026-06-17
 
 ### Fixed

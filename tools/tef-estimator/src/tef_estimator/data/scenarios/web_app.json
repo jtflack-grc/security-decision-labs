@@ -1,0 +1,106 @@
+{
+  "_metadata": {
+    "scenario": "web_app_exploitation",
+    "description": "Web application exploitation scenario — TEF-D2",
+    "status": "Substrata-grounded",
+    "extracted_date": "2026-07-24",
+    "extracted_by": "Laura Voicu",
+    "_data_sources_needed": [
+      "DBIR web-app pattern by industry (sector shares)",
+      "IRIS Exploit Public-Facing Application by revenue (base-rate anchor)"
+    ],
+    "_susceptibility_note": "Edgescan (web app/API = 31.9% of critical+high findings, 2026) and Cobalt (serious-finding prevalence by sector, 2025) measure vulnerability prevalence: whether an attempt would succeed. They belong to the susceptibility assessment, not TEF; using them for TEF multipliers would count exposure twice."
+  },
+  "base_rate_triangulation": {
+    "_citation": "DBIR 2026 (exploitation 31%), Mandiant 2026 (exploitation 32%)",
+    "susceptibility_prior": [0.10, 0.20, 0.30],
+    "consensus": [0.015, 0.045, 0.12],
+    "consensus_note": "Exploitation-dominant scenario. DBIR 2026 exploitation = 31% of initial access. Mode anchored at ~1.5x exfiltration consensus mode (exploitation is the most common vector)."
+  },
+  "vector_proportions": {
+    "_citation": "DBIR 2026 Web Application pattern, adjusted for exploitation dominance",
+    "exploitation": [0.55, 0.65, 0.78],
+    "credential": [0.10, 0.15, 0.22],
+    "phishing": [0.05, 0.10, 0.15],
+    "supply_chain": [0.05, 0.10, 0.18]
+  },
+  "web_app_overall_share": {
+    "_citation": "DBIR 2026 incident classification pattern Basic Web Application Attacks = 10% of breaches (n=22,625 breaches, 2024-2025 data; Substrata record dbir2026_basic_web_app_all_all, hand-verified from PDF). Caveat: DBIR's denominator is breaches, while overall_share is used as a share of all cyber incidents (IRIS basis for ransomware), so the scale is approximate.",
+    "_badge": "amber",
+    "value": 0.10
+  },
+  "web_app_sector_shares": {
+    "_citation": "Derived from sector_multipliers x overall_share. Technology skew from higher web surface area.",
+    "_badge": "gray",
+    "healthcare": 0.110,
+    "financial": 0.130,
+    "information": 0.180,
+    "manufacturing": 0.085,
+    "retail": 0.140,
+    "education": 0.120,
+    "public": 0.115,
+    "professional": 0.150,
+    "utilities": 0.065,
+    "transportation": 0.070
+  },
+  "web_app_revenue_shares": {
+    "_citation": "No web-app-specific revenue breakdown available. Uses all-incident shares from IRIS 2025.",
+    "_badge": "gray",
+    "under_10m": 0.10,
+    "10m_100m": 0.10,
+    "100m_1b": 0.10,
+    "1b_10b": 0.10,
+    "10b_100b": 0.10,
+    "over_100b": 0.10
+  },
+  "web_app_revenue_prob_gte2": {
+    "_citation": "Not available from IRIS for web-app specifically. All null — tool falls back to overall floor.",
+    "_badge": "gray",
+    "under_10m": null,
+    "10m_100m": null,
+    "100m_1b": null,
+    "1b_10b": null,
+    "10b_100b": null,
+    "over_100b": null
+  },
+  "sector_multipliers": {
+    "_citation": "IRIS 2025 + Cofense 2026 bypass rates, adjusted for web-app exposure (technology 1.8x reflects higher web surface)",
+    "_badge": "amber",
+    "healthcare": 1.10,
+    "financial": 1.30,
+    "information": 1.80,
+    "manufacturing": 0.85,
+    "retail": 1.40,
+    "education": 1.20,
+    "public": 1.15,
+    "professional": 1.50,
+    "utilities": 0.65,
+    "transportation": 0.70
+  },
+  "credential_tempo": {
+    "_citation": "Web-app credential attacks (credential stuffing, brute force). Lower campaign volume than ransomware — attacks are more targeted to specific web applications.",
+    "_badge": "amber",
+    "global_campaigns_per_month": [200, 600, 1500],
+    "credential_proportion": [0.10, 0.18, 0.28],
+    "addressable_population": [5000000, 10000000, 15000000]
+  },
+  "exploitation_scanning": {
+    "_citation": "GreyNoise-derived. Web-app exploitation uses a HIGH share of scanning activity — this is the primary vector.",
+    "_badge": "amber",
+    "grn_malicious_rate": [0.20, 0.38, 0.55],
+    "grn_malicious_rate_note": "Higher than ransomware baseline — web-app is exploitation-dominant.",
+    "grn_session_malicious_rate": 0.037,
+    "grn_suspicious_rate": null,
+    "campaign_ip_ratio_lognormal_mu": 4.0,
+    "campaign_ip_ratio_lognormal_sigma": 1.5,
+    "poa_ransomware": [0.02, 0.06, 0.12],
+    "poa_ransomware_note": "Higher PoA than other scenarios — exploitation is the primary success path.",
+    "ransomware_proportion_of_scanning": [0.15, 0.30, 0.50],
+    "ransomware_proportion_note": "Web-app exploitation constitutes a large share of vulnerability scanning."
+  },
+  "output_templates": {
+    "scenario_label": "Web Application Exploitation",
+    "attempt_verb": "attempt web application exploitation against",
+    "one_sentence": "Based on industry data, threat actors {attempt_verb} organizations matching your profile roughly once every {recurrence_years:.0f} years (range: {low_yr:.0f}-{high_yr:.0f} years). This measures how often adversaries TRY -- not how often they succeed. Success probability depends on your controls (assessed separately)."
+  }
+}

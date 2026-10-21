@@ -9,7 +9,7 @@
 
 Data-grounded Threat Event Frequency estimation with vector decomposition and multi-scenario support.
 
-Produces defensible TEF estimates for cyber risk quantification by decomposing threat frequency into four initial access vectors (exploitation, credential, phishing, supply chain), each with independent data sources and floor/ceiling bounds. Currently supports **ransomware**, **business email compromise (BEC)**, and **custom analyst-defined** scenarios.
+Produces defensible TEF estimates for cyber risk quantification by decomposing threat frequency into four initial access vectors (exploitation, credential, phishing, supply chain), each with independent data sources and floor/ceiling bounds. Currently supports **ransomware**, **business email compromise (BEC)**, **data exfiltration**, **web application exploitation**, and **custom analyst-defined** scenarios.
 
 See [docs/user-guide.md](docs/user-guide.md) for methodology details, [docs/technical-reference.md](docs/technical-reference.md) for the full specification, and [docs/api-reference.md](docs/api-reference.md) for CLI and Python API.
 
@@ -25,7 +25,7 @@ The web interface provides live estimation with sidebar profile inputs, vector b
 
 | Feature | Description |
 |---------|-------------|
-| **Analysis** | Distribution parameters (lognormal mu/sigma, percentiles) and vector priority ranking with multiplier explanations |
+| **Analysis** | Distribution parameters (lognormal mu/sigma, percentiles, the inputs for fair-risk-engine), dispersion (burstiness over time), and vector priority ranking with multiplier explanations |
 | **Sensitivity Analysis** | Tornado chart showing which parameters drive the estimate most |
 | **Compare Mode** | Side-by-side estimation for two organization profiles with delta |
 | **Audit Trail** | Full validation checks, anchor convergence, floor/ceiling bounds |
@@ -35,6 +35,9 @@ The web interface provides live estimation with sidebar profile inputs, vector b
 
 **Analysis & Sensitivity**
 ![Analysis and sensitivity analysis](docs/images/analysis.png)
+
+**Dispersion panel (new in 1.2.0)**
+![Dispersion panel with fitted shapes, VMR and series sources](docs/images/dispersion-panel.png)
 
 **Sensitivity tornado chart**
 ![Sensitivity analysis tornado](docs/images/sensitivity-analysis.png)
@@ -67,8 +70,8 @@ pip install tef-estimator[all]         # Everything
 Or from source:
 
 ```bash
-git clone https://github.com/security-decision-science/tef-estimator.git
-cd tef-estimator
+git clone https://github.com/security-decision-science/security-decision-labs.git
+cd security-decision-labs/tools/tef-estimator
 pip install -e ".[dev]"
 ```
 
@@ -171,10 +174,10 @@ Total TEF is decomposed into four initial access vectors, each estimated indepen
 
 | Vector | Ransomware Share | BEC Share | Primary Data |
 |--------|:---:|:---:|------|
-| Exploitation | ~20-25% | ~3% | DShield scanning, CISA KEV, EPSS |
-| Credential | ~50-55% | ~22% | Operational tempo, IAB market data |
-| Phishing | ~15-20% | ~65% | Anti-phishing vendor reports |
-| Supply chain | ~5-8% | ~10% | IR report third-party involvement rate |
+| Exploitation | ~26% | ~3% | DShield scanning, CISA KEV, EPSS |
+| Credential | ~48% | ~22% | Operational tempo, IAB market data |
+| Phishing | ~15% | ~65% | Anti-phishing vendor reports |
+| Supply chain | ~6% | ~10% | IR report third-party involvement rate |
 
 Vectors are summed with cross-vector dampening (k=0.85, empirically supported by VERIS analysis of 10,037 incidents).
 
@@ -182,7 +185,7 @@ Vectors are summed with cross-vector dampening (k=0.85, empirically supported by
 
 When organization-specific telemetry is provided (per-vector observed attempt rates, observation periods, detection coverage), the engine blends the population-level prior with the org's own data using Bühlmann credibility weighting. The point estimate shifts toward the observed rate proportional to the credibility weight Z = n/(n+k).
 
-The uncertainty band contracts via a Gamma-inspired mechanism: the PERT-derived band width is treated as a Gamma prior whose shape α is fit to the elicited range, then updated with observed pseudo-events. More observation periods produce a monotonically tighter output distribution. At zero telemetry, the band equals the prior. The mechanism uses two separately calibrated parameters (k for the mean, α_pert from the PERT range for the band) rather than a single Bayesian model. See `docs/technical-reference.md` §8.6 for the full derivation and known limitations.
+The uncertainty band contracts via a Gamma-inspired mechanism: the PERT-derived band width is treated as a Gamma prior whose shape α is fit to the elicited range, then updated with observed pseudo-events. More observation periods produce a tighter output distribution, up to `coverage_leverage_cap` (5 quarters); beyond that the band stops narrowing. At zero telemetry, the band equals the prior. The mechanism uses two separately calibrated parameters (k for the mean, α_pert from the PERT range for the band) rather than a single Bayesian model. See `docs/technical-reference.md` §8.6 for the full derivation and known limitations.
 
 ### Three-Anchor Base Rate Triangulation
 
@@ -239,10 +242,12 @@ Data freshness warnings also appear automatically in estimation output when any 
 
 Scenarios are pluggable data definitions under `tef_estimator/data/scenarios/`. The engine is scenario-agnostic -- adding a new scenario requires only a JSON data file and a Python class implementing `ScenarioDefinition`.
 
-| Scenario | Slug | Typical TEF (mid-market, US) |
+| Scenario | Slug | Typical TEF (financial, \$100M–\$1B, US) |
 |----------|------|------|
-| Ransomware | `ransomware` | ~0.7% (~1 in 146 years) |
+| Ransomware | `ransomware` | ~2.0% (~1 in 50 years) |
 | Business Email Compromise | `bec` | ~14.9% (~1 in 7 years) |
+| Data exfiltration | `exfiltration` | ~2.7% (~1 in 37 years) |
+| Web application exploitation | `web_app` | ~4.7% (~1 in 21 years) |
 | Custom | user-defined | varies |
 
 Custom scenarios are defined as JSON files specifying vector proportions across the four initial access vectors (exploitation, credential, phishing, supply chain), a base rate, and an overall incident share. Generate a template with `tef-estimator scenario template`, or use the visual builder in the web UI's Scenarios tab. See `docs/user-guide.md` for the full JSON spec.
@@ -254,7 +259,7 @@ Custom scenarios are defined as JSON files specifying vector proportions across 
 - **Cross-vector dampening is a judgment call.** k=0.85 is empirically supported by VERIS co-occurrence analysis (credential x phishing lift=8.3, exploitation independent at lift~0.2), but the bimodal structure means a single k is a simplification.
 - **BEC sector/revenue data is less granular than ransomware.** IRIS does not publish BEC-specific breakdowns; BEC shares are derived from FBI IC3 and the DBIR.
 - **TEF is non-stationary.** Output is labelled point-in-time; refresh on a regular basis (quarterly recommended).
-- **This estimates how often adversaries TRY, not how often they succeed.** Success probability depends on controls (which should beassessed separately).
+- **This estimates how often adversaries TRY, not how often they succeed.** Success probability depends on controls (which should be assessed separately).
 
 ## License
 

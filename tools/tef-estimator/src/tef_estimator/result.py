@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from tef_estimator.data.common import PERTRange, DampeningConfig
-from tef_estimator.distributions import LognormalParams
+import numpy as np
+
+from tef_estimator.distributions import DispersionParams, LognormalParams, sample_annual_counts
 from tef_estimator.vectors.base import VectorEstimate
 
 
@@ -89,6 +91,9 @@ class TEFResult:
     # --- Peer percentile (set by peer.py after estimation) ---
     peer_percentile: int | None = None
     peer_context: str | None = None
+
+    # --- Dispersion (burstiness over time), keyed "total" and "vectors" -> {key: params} ---
+    dispersion: dict = field(default_factory=dict)
 
     @property
     def total_positioned_range(self) -> PERTRange:
@@ -237,8 +242,75 @@ class TEFResult:
             f"\n"
             f"  Alternative: PERT(min={self.total_positioned_low:.5f}, "
             f"mode={self.total_positioned_median:.5f}, "
-            f"max={self.total_positioned_high:.5f})"
+            f"max={self.total_positioned_high:.5f})\n"
+            f"\n"
+            f"{self.fair_risk_engine_text()}"
         )
+
+    def fair_risk_engine_inputs(self, basis: str = "detrended") -> dict:
+        """TEF inputs for fair-risk-engine (FAIRInputs fields): this lognormal rate and the total dispersion.
+
+        fair-risk-engine takes P10/P50/P90; they are read off this lognormal (the
+        positioned low/high are about P5/P95). tef_dispersion is the total annual
+        shape, None for Poisson. basis="raw" gives the trend-included shape, the
+        sensitivity bound.
+        """
+        ln = self.lognormal
+        d = self.total_dispersion
+        if d is not None and basis == "raw":
+            d = d.as_raw()
+        return {
+            "tef_model": "lognormal",
+            "tef_p10": ln.p10,
+            "tef_p50": ln.median,
+            "tef_p90": ln.p90,
+            "tef_dispersion": None if d is None else d.annual_shape,
+        }
+
+    def fair_risk_engine_text(self) -> str:
+        inputs = self.fair_risk_engine_inputs()
+        raw = self.fair_risk_engine_inputs(basis="raw")["tef_dispersion"]
+        line = (f"  For fair-risk-engine: tef_model='lognormal', tef_p10={inputs['tef_p10']:.5g}, "
+                f"tef_p50={inputs['tef_p50']:.5g}, tef_p90={inputs['tef_p90']:.5g}, "
+                f"tef_dispersion={'None' if inputs['tef_dispersion'] is None else format(inputs['tef_dispersion'], 'g')}")
+        if raw is not None and raw != inputs["tef_dispersion"]:
+            line += f"\n  (trend-included sensitivity bound: tef_dispersion={raw:g})"
+        return line
+
+    @property
+    def total_dispersion(self) -> DispersionParams | None:
+        return self.dispersion.get("total") if self.dispersion else None
+
+    @property
+    def has_dispersion(self) -> bool:
+        if not self.dispersion:
+            return False
+        entries = [self.dispersion.get("total"), *self.dispersion.get("vectors", {}).values()]
+        return any(d is not None and not d.is_poisson for d in entries)
+
+    def dispersion_text(self) -> str:
+        """Burstiness of the rate over time, for Monte Carlo consumers."""
+        lines = ["DISPERSION (rate burstiness over time; negative binomial counts):"]
+        rows = [("Total", self.total_dispersion, self.total_positioned_median)]
+        rows += [(v.vector_name, self.dispersion.get("vectors", {}).get(v.telemetry_key), v.positioned_median)
+                 for v in self.vectors]
+        for name, d, rate in rows:
+            if d is None or d.is_poisson:
+                lines.append(f"  {name}: Poisson (no public series to fit)")
+            else:
+                lines.append(
+                    f"  {name}: monthly shape r={d.shape_r:g} ({d.basis}), shock lasts a {d.timescale} "
+                    f"-> annual shape {d.annual_shape:g}; VMR at your rate = 1 + λ/(annual shape) = {d.vmr(rate):.4f}"
+                )
+        lines.append("  Effect on the annual loss tail is small at a few events a year; it grows with frequency.")
+        return "\n".join(lines)
+
+    def sample_annual_counts(self, size: int = 10_000, rng: np.random.Generator | None = None) -> np.ndarray:
+        """Annual event counts: rate drawn from the TEF lognormal, then the dispersion shock, then Poisson."""
+        if rng is None:
+            rng = np.random.default_rng()
+        rates = self.lognormal.sample(size=size, rng=rng)
+        return sample_annual_counts(rates, self.total_dispersion, rng)
 
     @property
     def has_credibility_data(self) -> bool:
@@ -291,6 +363,9 @@ class TEFResult:
             sep,
             self.distribution_text(),
         ]
+
+        if self.has_dispersion:
+            sections.extend(["", self.dispersion_text()])
 
         if self.has_credibility_data:
             sections.extend(["", sep, self.credibility_text()])
@@ -511,6 +586,15 @@ class TEFResult:
                     for v in a.vectors
                     if v.credibility_z is not None
                 ] or None,
+                "dispersion": {
+                    "total": self.total_dispersion.to_dict(self.total_positioned_median)
+                    if self.total_dispersion is not None else None,
+                    "vectors": {
+                        v.telemetry_key: self.dispersion["vectors"][v.telemetry_key].to_dict(v.positioned_median)
+                        for v in self.vectors
+                        if v.telemetry_key in self.dispersion.get("vectors", {})
+                    },
+                } if self.dispersion else None,
             },
             "audit": {
                 "traces": au.traces,

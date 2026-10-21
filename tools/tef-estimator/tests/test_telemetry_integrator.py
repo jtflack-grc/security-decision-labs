@@ -1,9 +1,17 @@
 """Tests for tef_estimator.telemetry.integrator."""
 
+from datetime import date, timedelta
+
 import pytest
 
 from tef_estimator.telemetry.db import TelemetryDB
 from tef_estimator.telemetry.integrator import run_integration
+
+
+def _recent_dates(n: int, offset: int = 5) -> list[str]:
+    """Return n consecutive date strings ending `offset` days before today."""
+    end = date.today() - timedelta(days=offset)
+    return [(end - timedelta(days=n - 1 - i)).isoformat() for i in range(n)]
 
 
 @pytest.fixture
@@ -16,17 +24,17 @@ def db_with_data():
     cursor = conn.cursor()
     ts = db.collection_timestamp()
 
-    for i, date in enumerate(["2026-06-01", "2026-06-02", "2026-06-03",
-                               "2026-06-04", "2026-06-05"]):
+    dates = _recent_dates(5)
+    for i, d in enumerate(dates):
         db.insert_observation(
             cursor, "dshield", "scan_activity",
-            date, "unique_sources_port_3389", float(100 + i * 10),
+            d, "unique_sources_port_3389", float(100 + i * 10),
             "count", ts, f"hash_{i}",
         )
 
     db.insert_observation(
         cursor, "cisa_kev", "vulnerability_catalog",
-        "2026-06-01", "kev_CVE-2026-0001", 1.0,
+        dates[0], "kev_CVE-2026-0001", 1.0,
         "binary", ts, "kevhash",
     )
 
@@ -77,12 +85,13 @@ class TestIntegrator:
         cursor = conn.cursor()
         ts = db.collection_timestamp()
 
+        dates = _recent_dates(3)
         db.insert_observation(cursor, "dshield", "scan_activity",
-                              "2026-06-01", "test_metric", 100.0,
+                              dates[0], "test_metric", 100.0,
                               "count", ts, "h1")
-        # Skip 2026-06-02
+        # Skip dates[1]
         db.insert_observation(cursor, "dshield", "scan_activity",
-                              "2026-06-03", "test_metric", 200.0,
+                              dates[2], "test_metric", 200.0,
                               "count", ts, "h2")
         conn.commit()
         conn.close()
@@ -95,7 +104,8 @@ class TestIntegrator:
         cursor = conn.cursor()
         cursor.execute(
             """SELECT value, interpolation_flag FROM time_series
-               WHERE metric_name = 'test_metric' AND series_date = '2026-06-02'"""
+               WHERE metric_name = 'test_metric' AND series_date = ?""",
+            (dates[1],),
         )
         row = cursor.fetchone()
         conn.close()

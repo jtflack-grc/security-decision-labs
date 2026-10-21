@@ -52,10 +52,10 @@ Instead of one blended estimate, the tool decomposes TEF into four initial acces
 
 | Vector | What It Represents | Ransomware Share | BEC Share |
 |--------|-------------------|:---:|:---:|
-| **Exploitation** | Scanning for and exploiting software vulnerabilities on exposed devices | ~20-25% | ~3% |
-| **Credential** | Using stolen credentials (purchased from initial access brokers, harvested by infostealers) | ~50-55% | ~22% |
-| **Phishing** | Email-based social engineering to deliver malware or steal credentials | ~15-20% | ~65% |
-| **Supply chain** | Compromising a trusted third party to reach the target | ~5-8% | ~10% |
+| **Exploitation** | Scanning for and exploiting software vulnerabilities on exposed devices | ~26% | ~3% |
+| **Credential** | Using stolen credentials (purchased from initial access brokers, harvested by infostealers) | ~48% | ~22% |
+| **Phishing** | Email-based social engineering to deliver malware or steal credentials | ~15% | ~65% |
+| **Supply chain** | Compromising a trusted third party to reach the target | ~6% | ~10% |
 
 Each vector is estimated independently with its own data sources, floor, ceiling, and positioning logic. The four vector estimates are summed with cross-vector dampening to produce the total TEF.
 
@@ -67,9 +67,13 @@ Each vector is estimated independently with its own data sources, floor, ceiling
 
 A scenario defines a specific threat type with its own vector proportions and base rate. The engine is scenario-agnostic — it runs the same computation regardless of scenario. Currently supported:
 
-**Ransomware** — The most data-rich scenario. Credential access is the dominant vector (~52%). Base rate triangulated from operational tempo, IRIS back-calculation, and Coalition insurer data. Typical mid-market US TEF: ~1-2%.
+**Ransomware** — The most data-rich scenario. Credential access is the dominant vector (~48%). Base rate triangulated from operational tempo, IRIS back-calculation, and Coalition insurer data. Typical mid-market US TEF: ~2–6% (financial 2.0%, manufacturing 3.7% without remote access).
 
-**Business Email Compromise (BEC)** — Phishing is the dominant vector (~65%). BEC frequency is roughly 10-20x higher than ransomware for the same profile because BEC campaigns are cheaper to execute, harder to detect, and target a wider range of organizations. Typical mid-market US financial sector TEF: ~15%.
+**Business Email Compromise (BEC)** — Phishing is the dominant vector (~65%). BEC frequency is roughly 1.5–8x higher than ransomware for the same profile (about 7x for mid-market US financial) because BEC campaigns are cheaper to execute, harder to detect, and target a wider range of organizations. Typical mid-market US financial sector TEF: ~15%.
+
+**Data exfiltration** *(new in 1.2.0)* — Credential access dominates (~45%). Base rate PERT(0.8%, 2.5%, 7%) annual probability. Status: Substrata-grounded; non-ransomware IRIS LEF, DBIR exfiltration shares and Coalition non-ransomware claims are still to be added. No peer percentile yet. CLI: `--scenario exfiltration`.
+
+**Web application exploitation** *(new in 1.2.0)* — Exploitation dominates (~65%). Base rate PERT(1.5%, 4.5%, 12%). Status: Substrata-grounded; the DBIR web-app pattern by industry and the IRIS public-facing-application share by revenue are still to be added. No peer percentile yet. CLI: `--scenario web_app`.
 
 **Custom scenarios** — Analysts can define their own threat scenarios by specifying vector proportions and a base rate. Custom scenarios use the same four initial access vectors (exploitation, credential, phishing, supply chain) — you set the proportion allocated to each, and can zero out vectors that don't apply. For example, an insider threat scenario might weight credential at 80% and phishing at 20% with exploitation and supply chain at zero.
 
@@ -124,9 +128,9 @@ This default coefficient is empirically supported by VERIS co-occurrence analysi
 
 If your organization has its own observations — WAF/IDS logs for exploitation, email gateway data for phishing, authentication logs for credential — you can supply per-vector telemetry to refine the population-level estimate.
 
-The engine blends the population prior with your observed rate using Bühlmann credibility weighting. The weight Z = n/(n+k) increases with more observation periods and higher detection coverage. Vectors with better observability (exploitation, default k=6) gain credibility faster than hard-to-observe vectors (supply chain, default k=40). Per-vector k values are configurable in `config.yaml` and the UI.
+The engine blends the population prior with your observed rate using Bühlmann credibility weighting. The weight Z = n/(n+k) increases with more observation periods and higher detection coverage. Lower k gains credibility faster: exploitation (default k=6) fastest, then credential and phishing (k=10), then supply chain (k=40). All four k values are asserted (judgment; technical reference §8.3). Per-vector k values are configurable in `config.yaml` and the UI.
 
-**Band contraction:** The uncertainty band around your estimate narrows as you provide more data. The engine uses a Gamma-inspired variance contraction mechanism to derive tighter bands from the accumulated evidence. At zero telemetry, the band equals the population-level PERT range. With 20 quarters (5 years) of observation at a rate of 0.05, the band contracts by approximately 16%. This means the lognormal sigma fed to your Monte Carlo shrinks — you get a more precise TEF input, not just a shifted one. Note: detection coverage affects the point estimate but not the band width (see `docs/technical-reference.md` §8.6 for details).
+**Band contraction:** The uncertainty band around your estimate narrows as you provide more data. The engine uses a Gamma-inspired variance contraction mechanism to derive tighter bands from the accumulated evidence. At zero telemetry, the band equals the population-level PERT range. With 4 quarters of observation at a rate of 0.05 and full detection coverage, the band contracts by about 3.5%; band hardening (1.2.0) stops further narrowing beyond 5 quarters, and never narrows σ below a quarter of the prior. This means the lognormal sigma fed to your Monte Carlo shrinks — you get a more precise TEF input, not just a shifted one. Note: the band narrows with the number of events you actually detected. Lower detection coverage means fewer detections, so a wider band; coverage itself moves the point estimate, not the band width for a given detected count (see `docs/technical-reference.md` §8.6 for details).
 
 ```python
 from tef_estimator.credibility import VectorObservation, OrgTelemetry
@@ -148,6 +152,28 @@ profile = OrganizationProfile(
 )
 ```
 
+### Dispersion (Burstiness Over Time)
+
+Real attack counts are burstier than a fixed rate: campaign waves and mass exploitation push many organizations' rates up in the same months. Since 1.2.0 the output includes a **dispersion shape r** for this. If your simulation draws event counts from the TEF, draw them as negative binomial (a Gamma-mixed rate) instead of Poisson. The mean stays the same; the variance grows to λ + λ²/s, where s is the annual shape (12r with the default monthly timescale).
+
+Defaults exist only where a public series supports them: the exploitation vector (CISA KEV, Jan 2023–May 2026, r ≈ 22) and the ransomware scenario total (Ransomware.live, r ≈ 130). Everything else stays Poisson and says so. Two settings in `config.yaml`:
+- `dispersion.timescale`: `month` (default, independent monthly shocks; annual shape 12r) or `year` (a shock lasts all year; the cautious alternative, about 12× more extra variance). Evidence in [dispersion-timescale.md](dispersion-timescale.md).
+- `dispersion.basis`: `detrended` (default) or `raw` (the sensitivity bound)
+
+For one organization with a few events a year, the effect on the loss tail is small: a few percent at P99 even in the burstiest case. It matters at high frequencies and for portfolios. See technical reference §8.7.
+
+```python
+result = TEFEngine().estimate(profile)
+result.total_dispersion.vmr(result.total_positioned_median)  # variance-to-mean ratio at your rate
+counts = result.sample_annual_counts(size=100_000)            # rate uncertainty + shock + Poisson
+```
+
+**In fair-risk-engine.** The report and the UI print the exact inputs, for example
+`tef_model='lognormal', tef_p10=0.012307, tef_p50=0.062132, tef_p90=0.31368, tef_dispersion=1556.4`.
+In Python, `FAIRInputs(**result.fair_risk_engine_inputs(), ...)` passes them directly. fair-risk-engine
+then simulates the same count model as `sample_annual_counts()`. Use these P10/P90 rather than the
+positioned low/high, which are about P5/P95.
+
 ### Peer Percentile
 
 The tool runs itself across a grid of profiles — all sector/revenue/geography combinations at default technology settings — and reports where your estimate falls relative to peers in the same revenue band:
@@ -160,7 +186,7 @@ This means 78% of comparable organizations face lower TEF than you. Boards and e
 
 ### Example 1: Ransomware — Manufacturing Company
 
-**Profile:** Manufacturing sector, $100M-$1B revenue, US-based, Fortinet VPN exposed, 2,000 employees.
+**Profile:** Manufacturing sector, \$100M-\$1B revenue, US-based, Fortinet VPN exposed, 2,000 employees.
 
 ```bash
 tef-estimator estimate --sector manufacturing --revenue 100m_1b --geo us \
@@ -172,30 +198,30 @@ tef-estimator estimate --sector manufacturing --revenue 100m_1b --geo us \
 ```
 RANSOMWARE TEF ESTIMATE
 ========================================
-Annual probability: 2.1%
-Recurrence: ~1 in 47 years
+Annual probability: 6.2%
+Recurrence: ~1 in 16 years
 
-Peer percentile: 100th (100m-1b)
+Peer percentile: 100th (100m-1b (tech-neutral peers))
 
 VECTOR BREAKDOWN:
-  Exploitation     24% #########
-  Credential       56% ######################
-  Phishing         16% ######
+  Exploitation     28% ###########
+  Credential       52% ####################
+  Phishing         14% #####
   Supply Chain      5% #
 ```
 
 **How to read this:**
 
-- **Annual probability 2.1%** means ransomware operators attempt to reach organizations like this one roughly 2.1 times per 100 organization-years, or about once every 47 years. This is the *attempt* rate, not the success rate.
+- **Annual probability 6.2%** means ransomware operators attempt to reach organizations like this one roughly 6.2 times per 100 organization-years, or about once every 16 years. This is the *attempt* rate, not the success rate.
 - **Peer percentile 100th** means this profile faces higher TEF than all other mid-market profiles in the peer grid. This is driven by the Fortinet VPN exposure (vulnerable VPN vendors elevate both exploitation and credential vectors) combined with manufacturing's high ransomware concentration (1.66x sector-adjusted multiplier).
-- **Credential at 56%** is the dominant vector because stolen VPN credentials are the primary entry point for ransomware operators targeting manufacturing.
-- **Distribution parameters** (shown below the vector breakdown) give you PERT and lognormal parameters to use in a Monte Carlo simulation. The lognormal is recommended: mu=-3.858, sigma=0.831.
+- **Credential at 52%** is the dominant vector because stolen VPN credentials are the primary entry point for ransomware operators targeting manufacturing.
+- **Distribution parameters** (shown below the vector breakdown) give you PERT and lognormal parameters to use in a Monte Carlo simulation. The lognormal is recommended: mu=-2.778, sigma=1.263.
 
-**What to do with this:** Feed the TEF distribution into your FAIR model alongside susceptibility and loss magnitude. The vector breakdown tells you where to focus your susceptibility assessment — in this case, credential controls (56% of your TEF).
+**What to do with this:** Feed the TEF distribution into your FAIR model alongside susceptibility and loss magnitude. The vector breakdown tells you where to focus your susceptibility assessment — in this case, credential controls (52% of your TEF).
 
 ### Example 2: BEC — Financial Services Company
 
-**Profile:** Financial sector, $100M-$1B revenue, US-based, no remote access exposed.
+**Profile:** Financial sector, \$100M-\$1B revenue, US-based, no remote access exposed.
 
 ```bash
 tef-estimator estimate --sector financial --revenue 100m_1b --geo us --scenario bec
@@ -221,9 +247,9 @@ VECTOR BREAKDOWN:
 - **14.9% annual probability** — BEC attempts are dramatically more frequent than ransomware for the same profile. Financial services is the #1 BEC target sector.
 - **Phishing at 71%** — BEC is overwhelmingly a phishing-driven threat.
 - **Supply chain at 11%** — vendor email compromise (fake invoices from compromised supplier accounts) is a meaningful BEC vector, especially for financial services.
-- **No peer percentile** — the BEC peer grid hasn't been built yet; run `tef-estimator data peer-grid --rebuild` with `--scenario bec` to generate one.
+- **Peer percentile** — shown for BEC as for ransomware; exfiltration and web-app scenarios have no peer grid yet.
 
-**Comparing scenarios:** The same mid-market US financial profile faces ~0.7% ransomware TEF vs ~14.9% BEC TEF. BEC is attempted roughly 20x more often than ransomware for this profile. This doesn't mean BEC is 20x riskier — BEC loss magnitudes are typically much smaller than ransomware, and susceptibility differs. But it means the TEF input to your FAIR model will be very different depending on which threat scenario you're analyzing.
+**Comparing scenarios:** The same mid-market US financial profile faces ~2.0% ransomware TEF vs ~14.9% BEC TEF. BEC is attempted roughly 7x more often than ransomware for this profile. This doesn't mean BEC is 7x riskier — BEC loss magnitudes are typically much smaller than ransomware, and susceptibility differs. But it means the TEF input to your FAIR model will be very different depending on which threat scenario you're analyzing.
 
 ### Example 3: Comparing Profiles
 
@@ -240,15 +266,15 @@ Profile A: Manufacturing | 100M–1B | Us | VPN: fortinet
 Profile B: Manufacturing | 100M–1B | Us
 
 VECTOR DELTAS:
-  Exploitation    -0.00260 (-0.26pp)
-  Credential      -0.00701 (-0.70pp)
+  Exploitation    -0.00921 (-0.92pp)
+  Credential      -0.01942 (-1.94pp)
   Phishing        +0.00000 (+0.00pp)
   Supply Chain    +0.00000 (+0.00pp)
 
-  TOTAL           -0.00817 (-0.82pp)
+  TOTAL           -0.02434 (-2.43pp)
 ```
 
-**How to read this:** Removing the Fortinet VPN reduces total TEF by 0.82 percentage points. The reduction comes from two vectors — credential (-0.70pp) because VPN credentials are no longer a viable entry point, and exploitation (-0.26pp) because the vulnerable edge device is removed. Phishing and supply chain are unaffected because they don't depend on VPN exposure.
+**How to read this:** Removing the Fortinet VPN reduces total TEF by 2.43 percentage points. The reduction comes from two vectors — credential (-1.94pp) because VPN credentials are no longer a viable entry point, and exploitation (-0.92pp) because the vulnerable edge device is removed. Phishing and supply chain are unaffected because they don't depend on VPN exposure.
 
 This is how the tool connects to control investment decisions: "Completing the VPN migration reduces our ransomware TEF by 39%."
 
@@ -261,16 +287,16 @@ tef-estimator sensitivity --sector manufacturing --revenue 100m_1b --geo us
 ```
 SENSITIVITY ANALYSIS
 ============================================================
-Baseline TEF: 0.01245 (1.24%)
+Baseline TEF: 0.03651 (3.65%)
 
 Parameter                 Low          High            Range
 ------------------------------------------------------------
-base_rate                 0.00771    0.03112    4.0x
-vector_k                  0.01025    0.01465    1.4x
-factor_k                  0.01125    0.01425    1.3x
+base_rate                 0.01217    0.12169    10.0x
+vector_k                  0.03006    0.04295    1.4x
+factor_k                  0.03300    0.04177    1.3x
 ```
 
-**How to read this:** The base rate dominates the output uncertainty with a 4.0x range — varying the base rate from its low to high produces a 4x change in the total TEF, while dampening parameters (vector_k, factor_k) produce only 1.3-1.4x variation. This means the base rate is the single most valuable parameter to refine through better data (e.g., insurer partnership data).
+**How to read this:** The base rate dominates the output uncertainty with a 10.0x range — varying the base rate from its low to high produces a 10x change in the total TEF, while dampening parameters (vector_k, factor_k) produce only 1.3-1.4x variation. This means the base rate is the single most valuable parameter to refine through better data (e.g., insurer partnership data).
 
 ## Interpreting the Output
 
@@ -283,29 +309,29 @@ Tier 1 is designed for slides and executive communication. Access it via `--brie
 ```
 RANSOMWARE TEF ESTIMATE
 ========================================
-Annual probability: 2.1%
-Recurrence: ~1 in 47 years
+Annual probability: 6.2%
+Recurrence: ~1 in 16 years
 
-Peer percentile: 100th (100m-1b)
+Peer percentile: 100th (100m-1b (tech-neutral peers))
 
 VECTOR BREAKDOWN:
-  Exploitation     24% #########
-  Credential       56% ######################
-  Phishing         16% ######
+  Exploitation     28% ###########
+  Credential       52% ####################
+  Phishing         14% #####
   Supply Chain      5% #
 ```
 
 #### Annual Probability
 
-The positioned TEF mode expressed as a percentage. "2.1%" means: in a population of 1,000 organizations with this profile, approximately 21 would face a ransomware attempt in a given year.
+The positioned TEF median expressed as a percentage. "6.2%" means: in a population of 1,000 organizations with this profile, approximately 62 would face a ransomware attempt in a given year.
 
 This is *not* a guarantee. It's a frequency estimate based on current threat landscape data, subject to the uncertainty ranges in Tier 2.
 
 #### Recurrence
 
-The inverse of the annual probability: 1 / 0.021 = 47 years. This is the expected time between events if the current threat level remains constant. It's easier for non-technical audiences to reason about than a percentage.
+The inverse of the annual probability: 1 / 0.062 = 16 years. This is the expected time between events if the current threat level remains constant. It's easier for non-technical audiences to reason about than a percentage.
 
-A common misinterpretation to avoid: "We're safe for 47 years." Events are stochastic — you could be hit next year. The recurrence interval is a statistical expectation, not a schedule.
+A common misinterpretation to avoid: "We're safe for 16 years." Events are stochastic — you could be hit next year. The recurrence interval is a statistical expectation, not a schedule.
 
 #### Peer Percentile
 
@@ -330,25 +356,28 @@ Tier 2 is the analyst's workspace. Access it via default CLI output or the `anal
 ```
 DISTRIBUTION PARAMETERS (for Monte Carlo):
   Recommended distribution: Lognormal
-  mu (ln-space): -3.858
-  sigma (ln-space): 0.831
-  5th percentile:  0.00538  (0.54%)
-  Median:          0.02111  (2.11%)
-  95th percentile: 0.08283  (8.28%)
+  mu (ln-space): -2.778
+  sigma (ln-space): 1.263
+  5th percentile:  0.00778  (0.78%)
+  Median:          0.06213  (6.21%)
+  95th percentile: 0.49645  (49.64%)
 
-  Alternative: PERT(min=0.00771, mode=0.02111, max=0.11874)
+  Alternative: PERT(min=0.00771, mode=0.06213, max=0.49195)
+
+  For fair-risk-engine: tef_model='lognormal', tef_p10=0.012307, tef_p50=0.062132, tef_p90=0.31368, tef_dispersion=1556.4
+  (trend-included sensitivity bound: tef_dispersion=418.8)
 ```
 
 **For Monte Carlo simulation:** Use the lognormal parameters directly. In Python:
 
 ```python
 import numpy as np
-samples = np.random.lognormal(mean=-3.858, sigma=0.831, size=10000)
+samples = np.random.lognormal(mean=-2.778, sigma=1.263, size=10000)
 ```
 
-Or use the `LognormalParams.sample(n)` method.
+Or use the `LognormalParams.sample(size)` method.
 
-**The 5th-95th range** is the practical uncertainty band. For this example: somewhere between 0.5% and 8.3% annual probability, with 2.1% as the most likely value. This 16x range reflects genuine uncertainty, dominated by base rate uncertainty (see sensitivity analysis).
+**The 5th-95th range** is the practical uncertainty band. For this example: somewhere between 0.8% and 50% annual probability, with 6.2% as the median. This 64x range reflects genuine uncertainty, dominated by base rate uncertainty (see sensitivity analysis).
 
 **Lognormal vs PERT:** The lognormal is recommended because TEF distributions are right-skewed (the right tail matters more than the left tail for risk). The PERT is provided as a simpler alternative for tools that support it.
 
@@ -359,33 +388,33 @@ Tier 3 is for the challenger or reviewer who wants to verify the calculation. Ac
 #### Triangulation Validation
 
 ```
-Anchor mode convergence: 3.0x (convergent)
-  operational_tempo: PERT(0.0030, 0.0050, 0.0070)
+Anchor mode convergence: 4.0x (convergent)
+  operational_tempo: PERT(0.0110, 0.0250, 0.0670)
   iris_back_calculation: PERT(0.0050, 0.0150, 0.0800)
-  coalition_market_adjusted: PERT(0.0060, 0.0120, 0.0150)
-Suggested consensus: PERT(0.0030, 0.0107, 0.0267)
-Analyst consensus:   PERT(0.0030, 0.0100, 0.0250)
-Consensus within 7% of suggestion
+  coalition_market_adjusted: PERT(0.0300, 0.0600, 0.1500)
+Suggested consensus: PERT(0.0050, 0.0333, 0.0833)
+Analyst consensus:   PERT(0.0100, 0.0300, 0.1000)
+Consensus within 10% of suggestion
 ```
 
-**Convergence ratio** (3.0x here): the ratio between the highest and lowest anchor modes. Below 10x = "convergent" — the three independent methods agree within an order of magnitude, which makes the consensus defensible.
+**Convergence ratio** (4.0x here): the ratio between the highest and lowest anchor modes. Below 10x = "convergent" — the three independent methods agree within an order of magnitude, which makes the consensus defensible.
 
 **Suggested vs analyst consensus:** The suggested consensus is computed mechanically (arithmetic mean of modes, min of lows, capped high). The analyst consensus is the value actually used in the estimation. A deviation under 50% is flagged as acceptable. Large deviations trigger a warning.
 
 #### Validation Checks
 
 ```
-Floor <= Positioned: 0.00771 <= 0.01245
-Positioned <= Ceiling: 0.01245 <= 0.09
-At susceptibility 5%: implied LEF = 0.00062 (0.1x IRIS floor)
-At susceptibility 15%: implied LEF = 0.00187 (0.4x IRIS floor)
-At susceptibility 30%: implied LEF = 0.00373 (0.8x IRIS floor)
+Floor <= Positioned: 0.00771 <= 0.03651
+Positioned <= Ceiling: 0.03651 <= 0.09
+At susceptibility 5%: implied LEF = 0.00183 (0.4x IRIS floor)
+At susceptibility 15%: implied LEF = 0.00548 (1.2x IRIS floor)
+At susceptibility 30%: implied LEF = 0.01095 (2.4x IRIS floor)
 ```
 
 These checks verify internal consistency:
 
 - **Floor <= Positioned <= Ceiling** — the estimate is within the logical bounds
-- **Implied LEF at various susceptibilities** — what LEF would result if you applied different susceptibility assumptions. Compare against the IRIS floor (observed LEF) as a sanity check. At 30% susceptibility, the implied LEF is 0.8x the IRIS floor — plausible.
+- **Implied LEF at various susceptibilities** — what LEF would result if you applied different susceptibility assumptions. Compare against the IRIS floor (observed LEF) as a sanity check. At 30% susceptibility, the implied LEF is 2.4x the IRIS floor — plausible.
 
 #### Warnings
 
@@ -417,8 +446,8 @@ tef-estimator data peer-grid --rebuild
 
 The TEF output feeds into a full FAIR analysis:
 
-1. **Estimate TEF** using this tool for your target scenario (ransomware, BEC)
-2. **Extract distribution parameters** (lognormal mu/sigma from Tier 2)
+1. **Estimate TEF** using this tool for your target scenario (ransomware, BEC, data exfiltration, web-app exploitation)
+2. **Extract distribution parameters** (lognormal mu/sigma from Tier 2, plus the dispersion shape if you simulate event counts)
 3. **Note the dominant vector** from the vector breakdown
 4. **Assess susceptibility** per vector (control effectiveness assessment is separate)
 5. **Compute LEF** = TEF distribution x susceptibility distribution
@@ -430,7 +459,7 @@ The vector decomposition means you can (and should) estimate susceptibility *per
 
 **Q: Why is BEC TEF so much higher than ransomware?**
 
-BEC campaigns are cheaper to execute (no malware development, no infrastructure), harder to attribute (spoofed email vs deployed malware), and target a wider population (any company that processes invoices). The base rate for BEC attempts is roughly 10-20x higher than ransomware. However, BEC loss magnitudes are typically much smaller and susceptibility varies widely — a company with strong out-of-band verification procedures has very low BEC susceptibility regardless of TEF.
+BEC campaigns are cheaper to execute (no malware development, no infrastructure), harder to attribute (spoofed email vs deployed malware), and target a wider population (any company that processes invoices). The base rate for BEC attempts is about 3x higher than ransomware (consensus mode 10% vs 3%). However, BEC loss magnitudes are typically much smaller and susceptibility varies widely — a company with strong out-of-band verification procedures has very low BEC susceptibility regardless of TEF.
 
 **Q: My estimate seems too low / too high. What should I do?**
 
@@ -440,9 +469,9 @@ Run `tef-estimator explain` to see the full calculation trace. Check which multi
 
 The output is labelled "point-in-time; refresh quarterly." Refresh by updating bundled reference data. Run `tef-estimator refresh check` to validate data freshness. Reference data (IRIS, Beazley, Coalition) updates annually when new reports are published; snapshot data (DShield, KEV, EPSS, Ransomware.live) can be refreshed via `tef-estimator refresh`.
 
-**Q: Can I use this for a scenario not listed (e.g., insider threat, data exfiltration)?**
+**Q: Can I use this for a scenario not listed (e.g., insider threat)?**
 
-Not yet with built-in scenarios. You can create a custom scenario by implementing the `ScenarioDefinition` protocol — see the Data Sources Guide for instructions. The engine is scenario-agnostic; it will run any scenario that provides the required data.
+Data exfiltration and web-app exploitation are built in since 1.2.0 (`--scenario exfiltration` / `web_app`). For others, define a custom scenario as a JSON file (see Scenarios above) or implement the `ScenarioDefinition` protocol. The engine is scenario-agnostic; it will run any scenario that provides the required data.
 
 **Q: What if I disagree with a specific multiplier?**
 

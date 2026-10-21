@@ -8,6 +8,7 @@ a TEFResult with full audit trail.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from datetime import date
@@ -74,7 +75,7 @@ class TEFEngine:
         self.base_rate = base_rate_override or self._resolve_base_rate()
 
         # Initialize vector engines
-        self.exploitation = ExploitationVector(self.dampening)
+        self.exploitation = ExploitationVector(self.dampening, config=self.config)
         self.credential = CredentialVector(self.dampening)
         self.phishing = PhishingVector(self.dampening)
         self.supply_chain = SupplyChainVector(self.dampening)
@@ -126,7 +127,7 @@ class TEFEngine:
         ]
 
         # --- Bühlmann credibility blending (if telemetry provided) ---
-        credibility_warnings = self._apply_credibility(vectors, profile)
+        credibility_warnings, hardening_checks = self._apply_credibility(vectors, profile)
 
         # --- Compute aggregate with cross-vector dampening ---
         raw_total_median = sum(v.positioned_median for v in vectors)
@@ -152,6 +153,9 @@ class TEFEngine:
         total_ceiling = sum(v.ceiling for v in vectors)
 
         # --- Lognormal parameters ---
+        # Centred on the positioned total. The vectors share one base rate, so their
+        # uncertainty is largely common; Fenton-Wilkinson (which assumes independent
+        # vectors) would put the median 1.35-1.72x above the headline TEF.
         lognormal = LognormalParams.from_median_and_range(
             median=total_median,
             low=total_low,
@@ -169,9 +173,17 @@ class TEFEngine:
             profile, vectors, total_median, total_floor, total_ceiling,
             tri_result,
         )
+        checks.extend(hardening_checks)
 
         # --- Warnings ---
         warnings = self._generate_warnings(profile, vectors, total_median, total_floor, credibility_warnings)
+
+        # --- Dispersion (burstiness over time); an added output, never changes the rate ---
+        dispersion = {
+            "total": self.config.dispersion_for("scenarios", self.scenario.scenario_slug),
+            "vectors": {v.telemetry_key: self.config.dispersion_for("vectors", v.telemetry_key)
+                        for v in vectors},
+        }
 
         return TEFResult(
             profile_summary=profile.summary(),
@@ -188,6 +200,7 @@ class TEFEngine:
             dampening=self.dampening,
             validation_checks=checks,
             warnings=warnings,
+            dispersion=dispersion,
         )
 
     def compare(
@@ -256,11 +269,11 @@ class TEFEngine:
 
         low_engine = TEFEngine(
             scenario=self.scenario, dampening=self.dampening,
-            base_rate_override=PERTRange(br.low, br.low, br.low),
+            base_rate_override=PERTRange(br.low, br.low, br.low), config=self.config,
         )
         high_engine = TEFEngine(
             scenario=self.scenario, dampening=self.dampening,
-            base_rate_override=PERTRange(br.high, br.high, br.high),
+            base_rate_override=PERTRange(br.high, br.high, br.high), config=self.config,
         )
         low_r = low_engine.estimate(sweep_profile)
         high_r = high_engine.estimate(sweep_profile)
@@ -287,8 +300,8 @@ class TEFEngine:
                 vector_k=k_range.high if k_name == "vector_k" else self.dampening.vector_k,
                 max_composite=self.dampening.max_composite,
             )
-            low_eng = TEFEngine(scenario=self.scenario, dampening=low_damp, base_rate_override=br)
-            high_eng = TEFEngine(scenario=self.scenario, dampening=high_damp, base_rate_override=br)
+            low_eng = TEFEngine(scenario=self.scenario, dampening=low_damp, base_rate_override=br, config=self.config)
+            high_eng = TEFEngine(scenario=self.scenario, dampening=high_damp, base_rate_override=br, config=self.config)
             low_r = low_eng.estimate(sweep_profile)
             high_r = high_eng.estimate(sweep_profile)
             entries.append(SensitivityEntry(
@@ -299,10 +312,42 @@ class TEFEngine:
                 range_multiple=high_r.total_positioned_median / max(low_r.total_positioned_median, 1e-10),
             ))
 
+        # Per-vector credibility k sweep (only with telemetry)
+        if profile.telemetry is not None:
+            _ksens = self.config.k_sensitivity or {}
+            k_ranges = {name: PERTRange(*vals) for name, vals in _ksens.items()}
+            ck = self.config.credibility_k
+            for vec_name, k_range in k_ranges.items():
+                obs = profile.telemetry.get(vec_name)
+                if obs is None:
+                    continue
+                from tef_estimator.config import TEFConfig
+                low_cfg = TEFConfig.from_dict(self.config.to_dict())
+                setattr(low_cfg.credibility_k, vec_name, k_range.low)
+                high_cfg = TEFConfig.from_dict(self.config.to_dict())
+                setattr(high_cfg.credibility_k, vec_name, k_range.high)
+                low_eng = TEFEngine(scenario=self.scenario, dampening=self.dampening,
+                                    base_rate_override=br, config=low_cfg)
+                high_eng = TEFEngine(scenario=self.scenario, dampening=self.dampening,
+                                     base_rate_override=br, config=high_cfg)
+                low_r = low_eng.estimate(sweep_profile)
+                high_r = high_eng.estimate(sweep_profile)
+                entries.append(SensitivityEntry(
+                    parameter=f"credibility_k_{vec_name}",
+                    pert_range=k_range,
+                    output_low=low_r.total_positioned_median,
+                    output_high=high_r.total_positioned_median,
+                    # Higher k lowers the output, so rank by spread (max/min), not by high/low.
+                    range_multiple=max(low_r.total_positioned_median, high_r.total_positioned_median)
+                    / max(min(low_r.total_positioned_median, high_r.total_positioned_median), 1e-10),
+                ))
+
         entries.sort(key=lambda x: x.range_multiple, reverse=True)
 
         caveats: list[str] = []
-        if profile.telemetry is not None:
+        if profile.telemetry is not None and not any(
+            e.parameter.startswith("credibility_k_") for e in entries
+        ):
             caveats.append(
                 "Sensitivity analysis varies population-model parameters only. "
                 "With telemetry present, credibility parameters (k, detection "
@@ -413,13 +458,19 @@ class TEFEngine:
         self,
         vectors: list[VectorEstimate],
         profile: OrganizationProfile,
-    ) -> list[str]:
-        """Apply Bühlmann credibility blending and Gamma-inspired band contraction."""
-        warnings: list[str] = []
-        if profile.telemetry is None:
-            return warnings
+    ) -> tuple[list[str], list[str]]:
+        """Apply Bühlmann credibility blending and Gamma-inspired band contraction.
 
-        blender = CredibilityBlender()
+        Returns (warnings, validation checks); a binding band-hardening limit
+        produces both a warning and a validation-check entry.
+        """
+        warnings: list[str] = []
+        checks: list[str] = []
+        if profile.telemetry is None:
+            return warnings, checks
+
+        # Use this engine's k values (not the global config) so per-vector k sweeps take effect.
+        blender = CredibilityBlender(k_overrides=dataclasses.asdict(self.config.credibility_k))
         for v in vectors:
             obs = profile.telemetry.get(v.telemetry_key)
             if obs is None:
@@ -435,10 +486,20 @@ class TEFEngine:
                          - math.log(max(v.positioned_low, 1e-10)))
             sigma_prior = log_range / (2 * 1.645)
 
+            bh = self.config.band_hardening
             if sigma_prior > 0:
                 cv_sq = math.exp(sigma_prior ** 2) - 1
                 alpha_pert = 1.0 / cv_sq if cv_sq > 0 else 1e6
-                n_events = blend.adjusted_observed * blend.effective_n / 4.0
+                # Pseudo-events = events actually detected (annualized_frequency is the raw detected
+                # rate), so coverage acts on the width only through the count. The cap limits the
+                # quarters counted; applying it to periods x coverage let lower coverage narrow the band more.
+                periods = min(obs.observation_periods, bh.coverage_leverage_cap)
+                if obs.observation_periods > bh.coverage_leverage_cap:
+                    msg = (f"{v.vector_name}: coverage-leverage cap bound "
+                           f"(observation periods {obs.observation_periods:g} → {bh.coverage_leverage_cap:g})")
+                    warnings.append(msg)
+                    checks.append(f"Band hardening: {msg}")
+                n_events = obs.annualized_frequency * periods / 4.0
                 alpha_post = alpha_pert + n_events
 
                 if n_events > 10 * alpha_pert:
@@ -451,6 +512,14 @@ class TEFEngine:
                     )
 
                 sigma_post = math.sqrt(math.log(1 + 1.0 / alpha_post))
+                sigma_floor = bh.min_sigma_ratio * sigma_prior
+                if sigma_post < sigma_floor:
+                    msg = (f"{v.vector_name}: band floor bound "
+                           f"(σ {sigma_post:.3f} → {sigma_floor:.3f}, "
+                           f"{bh.min_sigma_ratio:.0%} of prior)")
+                    warnings.append(msg)
+                    checks.append(f"Band hardening: {msg}")
+                sigma_post = max(sigma_post, sigma_floor)
             else:
                 sigma_post = 0.0
 
@@ -495,7 +564,7 @@ class TEFEngine:
                 f"Vector share proportions reflect this asymmetry."
             )
 
-        return warnings
+        return warnings, checks
 
 
 # ---------------------------------------------------------------------------

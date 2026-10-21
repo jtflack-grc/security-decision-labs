@@ -1,7 +1,7 @@
 """
 Organization profile — the input to the TEF estimation engine.
 
-6–9 questions, completable in 2–3 minutes.
+6–9 inputs.
 """
 
 from __future__ import annotations
@@ -9,12 +9,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from tef_estimator.config import get_config
 from tef_estimator.data import (
     Geography,
     RemoteAccessType,
     RevenueBand,
     Sector,
 )
+
+_REVENUE_MIDPOINTS = {
+    RevenueBand.UNDER_10M: 5_000,
+    RevenueBand.R_10M_100M: 55_000,
+    RevenueBand.R_100M_1B: 550_000,
+    RevenueBand.R_1B_10B: 5_500_000,
+    RevenueBand.R_10B_100B: 55_000_000,
+    RevenueBand.OVER_100B: 200_000_000,
+}
 
 if TYPE_CHECKING:
     from tef_estimator.credibility import OrgTelemetry
@@ -51,7 +61,6 @@ class OrganizationProfile:
 
     # --- Override hooks for analysts ---
     custom_base_rate: float | None = None  # Override the triangulated base rate
-    custom_susceptibility_prior: tuple[float, float] | None = None  # (low, high) for back-calc
 
     # --- Org-specific telemetry for Bühlmann credibility blending ---
     telemetry: OrgTelemetry | None = None
@@ -126,6 +135,28 @@ class OrganizationProfile:
     def is_cloud_primary(self) -> bool:
         """Cloud-primary with no edge devices — inferred from no VPN/RDP."""
         return self.has_no_remote_access and not self.edge_vendors
+
+    def infer_employee_count(self, subsector: str | None = None) -> int | None:
+        """Infer employee count from revenue band and sector RPE.
+
+        Returns None if employee_count is already set.
+        """
+        if self.employee_count is not None:
+            return None
+        cfg = get_config()
+        rpe_table = cfg.to_dict().get("revenue_per_employee", {})
+        sector_key = self.sector.value
+        rpe = None
+        if subsector and subsector in rpe_table:
+            rpe = rpe_table[subsector]
+        if rpe is None:
+            rpe = rpe_table.get(sector_key)
+        if rpe is None:
+            rpe = rpe_table.get("other", 300)
+        midpoint = _REVENUE_MIDPOINTS.get(self.revenue_band)
+        if midpoint is None or rpe <= 0:
+            return None
+        return max(1, round(midpoint / rpe))
 
     def summary(self) -> str:
         """Human-readable one-liner for output headers."""

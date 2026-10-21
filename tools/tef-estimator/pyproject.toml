@@ -4,14 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tef-estimator"
-version = "1.1.3"
+version = "1.2.0"
 description = "Data-grounded Threat Event Frequency estimation with vector decomposition"
 readme = "README.md"
 license = { text = "CC-BY-NC-SA-4.0" }
 requires-python = ">=3.10"
 authors = [
-    { name = "Laura Voicu", email = "laura.voicu@me.com" },
+    { name = "Laura Voicu" },
     { name = "Jack Jones" },
+]
+maintainers = [
+    { name = "Laura Voicu" },
 ]
 keywords = ["FAIR", "cyber risk", "ransomware", "BEC", "TEF", "risk quantification", "CRQ"]
 classifiers = [
@@ -45,7 +48,7 @@ tef-estimator = "tef_estimator.cli:app"
 PyPI = "https://pypi.org/project/tef-estimator/"
 Homepage = "https://github.com/security-decision-science/security-decision-labs/tree/main/tools/tef-estimator"
 Documentation = "https://github.com/security-decision-science/security-decision-labs/tree/main/tools/tef-estimator/docs"
-Issues = "https://github.com/security-decision-science/security-decision-labs/tree/main/tools/tef-estimator/issues"
+Issues = "https://github.com/security-decision-science/security-decision-labs/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tef_estimator"]

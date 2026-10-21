@@ -2,8 +2,8 @@
 Bühlmann credibility blending for per-vector TEF estimation.
 
 Blends population-level TEF priors with organization-specific telemetry
-observations. Each vector has its own structural parameter k, reflecting
-different observability characteristics.
+observations. Each vector has its own structural parameter k. The k values
+are asserted (judgment), not fitted; see docs/technical-reference.md §8.3.
 
     blended = Z × adjusted_observed + (1 - Z) × prior
     Z = effective_n / (effective_n + k)

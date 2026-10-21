@@ -1,7 +1,7 @@
 """
 CLI interface for the TEF estimator.
 
-Usage:
+Usage examples:
     tef-estimator estimate --sector manufacturing --revenue 100m_1b --geo us
     tef-estimator explain --sector manufacturing --revenue 100m_1b --geo us
     tef-estimator compare --sector manufacturing --revenue 100m_1b --geo us ...
@@ -35,6 +35,8 @@ from tef_estimator.data.common import (
 )
 from tef_estimator.data.loader import PEER_GRID_DIR
 from tef_estimator.data.scenarios.bec import BECScenario
+from tef_estimator.data.scenarios.exfiltration import ExfiltrationScenario
+from tef_estimator.data.scenarios.web_app import WebAppScenario
 from tef_estimator.data.scenarios.ransomware import RansomwareScenario
 from tef_estimator.engine import TEFEngine
 from tef_estimator.profile import OrganizationProfile
@@ -43,12 +45,16 @@ from tef_estimator.profile import OrganizationProfile
 class ScenarioChoice(str, Enum):
     RANSOMWARE = "ransomware"
     BEC = "bec"
+    EXFILTRATION = "exfiltration"
+    WEB_APP = "web_app"
     CUSTOM = "custom"
 
 
 SCENARIO_MAP = {
     ScenarioChoice.RANSOMWARE: RansomwareScenario,
     ScenarioChoice.BEC: BECScenario,
+    ScenarioChoice.EXFILTRATION: ExfiltrationScenario,
+    ScenarioChoice.WEB_APP: WebAppScenario,
 }
 
 PEER_GRID_PATH = PEER_GRID_DIR / "ransomware.json"
@@ -153,7 +159,7 @@ def estimate(
     brief: bool = typer.Option(False, "--brief", help="Tier 1 summary only"),
     full: bool = typer.Option(False, "--full", help="Tier 3 full audit trail"),
     scenario: ScenarioChoice = typer.Option(
-        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware or bec)"
+        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware, bec, exfiltration, web_app, custom)"
     ),
     telemetry: Path = typer.Option(
         None, "--telemetry", help="JSON file with org-specific vector observations for Bühlmann blending"
@@ -211,7 +217,7 @@ def explain(
     recent_ma: bool = typer.Option(False, help="M&A in last 18 months?"),
     base_rate: float = typer.Option(None, help="Override base rate"),
     scenario: ScenarioChoice = typer.Option(
-        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware or bec)"
+        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware, bec, exfiltration, web_app, custom)"
     ),
     scenario_file: Path = typer.Option(
         None, "--scenario-file", help="JSON file for custom scenario"
@@ -257,7 +263,7 @@ def compare(
     b_employees: int = typer.Option(None, "--b-employees", help="Profile B: employees"),
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
     scenario: ScenarioChoice = typer.Option(
-        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware or bec)"
+        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware, bec, exfiltration, web_app, custom)"
     ),
     scenario_file: Path = typer.Option(
         None, "--scenario-file", help="JSON file for custom scenario"
@@ -294,7 +300,7 @@ def sensitivity(
     employees: int = typer.Option(None, help="Approximate employee count"),
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
     scenario: ScenarioChoice = typer.Option(
-        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware or bec)"
+        ScenarioChoice.RANSOMWARE, help="Threat scenario (ransomware, bec, exfiltration, web_app, custom)"
     ),
     scenario_file: Path = typer.Option(
         None, "--scenario-file", help="JSON file for custom scenario"
