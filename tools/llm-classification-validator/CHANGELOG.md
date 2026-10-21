@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.3 — 2026-10-21
+
+### Fixed
+
+- `__version__` (and the UI badge) was hardcoded at 1.0.0 regardless of the installed version. It is now resolved from the source tree's `pyproject.toml`, falling back to the installed package metadata — the same fix tef-estimator got for its issue #2.
+
 ## v1.0.2 — 2026-10-21
 
 ### Fixed

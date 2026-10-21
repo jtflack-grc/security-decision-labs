@@ -8,7 +8,32 @@ Dimensions:
 5. Stability    - Paraphrase invariance and perturbation sensitivity
 """
 
-__version__ = "1.0.0"
+from importlib.metadata import PackageNotFoundError, version as _package_version
+
+
+def _resolve_version() -> str:
+    # The version of the code actually running (same fix as tef-estimator issue #2: never hardcoded).
+    # A source tree carries its own pyproject.toml, which stays correct even when
+    # an older install's metadata shadows it; wheel installs have no pyproject
+    # above the package and use the installed metadata, which there equals the code.
+    import re
+    from pathlib import Path
+
+    try:
+        text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+        if re.search(r'^name = "llm-classification-validator"', text, re.MULTILINE):
+            match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+            if match:
+                return match.group(1)
+    except OSError:
+        pass
+    try:
+        return _package_version("llm-classification-validator")
+    except PackageNotFoundError:
+        return "0+unknown"
+
+
+__version__ = _resolve_version()
 
 from llm_classification_validator.coherence.analysis import run_coherence_analysis
 from llm_classification_validator.consistency.report import run_consistency_check
