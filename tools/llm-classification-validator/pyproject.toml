@@ -4,20 +4,21 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-classification-validator"
-version = "1.0.0"
+version = "1.0.2"
+readme = "README.md"
 description = "Psychometric validation framework for LLM-generated classifications"
 requires-python = ">=3.10"
 license = "LicenseRef-CC-BY-NC-SA-4.0"
 authors = [
     { name = "Laura Voicu" },
 ]
-keywords = ["llm", "validation", "classification", "psychometric", "kappa"]
+keywords = ["llm", "validation", "classification", "psychometric", "kappa", "AI", "evaluation", "taxonomy", "security", "cohen-kappa"]
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/security-decision-science/llm-classification-validator"
-Repository = "https://github.com/security-decision-science/llm-classification-validator"
-Changelog = "https://github.com/security-decision-science/llm-classification-validator/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/security-decision-science/security-decision-labs/tree/main/tools/llm-classification-validator"
+Repository = "https://github.com/security-decision-science/security-decision-labs"
+Changelog = "https://github.com/security-decision-science/security-decision-labs/blob/main/tools/llm-classification-validator/CHANGELOG.md"
 Blog = "https://cloudsecurityalliance.org/blog/2026/07/02/validating-llm-generated-control-mappings-beyond-aggregate-accuracy"
 
 [project.optional-dependencies]

@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.2 — 2026-10-21
+
+### Fixed
+
+- Project links on PyPI (Homepage, Repository, Changelog) pointed to a repository that does not exist; they now point to this folder in security-decision-labs.
+
+## v1.0.1 — 2026-07-01
+
+Documentation and package metadata only; the code is unchanged.
+
+- The PyPI page shows the README.
+- More search keywords.
+- Links to the companion Cloud Security Alliance blog post.
+
 ## v1.0.0 — 2026-06-18
 
 First stable release.

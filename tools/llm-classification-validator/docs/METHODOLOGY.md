@@ -2,7 +2,7 @@
 
 Statistical foundations, design rationale, and implementation details for the five-dimension validation framework.
 
-Companion blog post: [Validating LLM-Generated Control Mappings Beyond Aggregate Accuracy]([https://TODO-CSA-BLOG-URL](https://cloudsecurityalliance.org/blog/2026/07/02/validating-llm-generated-control-mappings-beyond-aggregate-accuracy)) (Cloud Security Alliance)
+Companion blog post: [Validating LLM-Generated Control Mappings Beyond Aggregate Accuracy](https://cloudsecurityalliance.org/blog/2026/07/02/validating-llm-generated-control-mappings-beyond-aggregate-accuracy) (Cloud Security Alliance)
 
 ## The problem with aggregate accuracy
 

@@ -203,7 +203,7 @@ PYTHONPATH=. python examples/run_ui.py
 
 ## Tests
 
-111 tests across 8 test files, all using standard library only.
+119 tests across 8 test files, all using standard library only.
 
 ```bash
 pip install -e ".[dev]"
