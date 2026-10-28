@@ -38,7 +38,8 @@ class ScenarioDefinition(Protocol):
 
     @property
     def base_rate_triangulation(self) -> dict[str, PERTRange]:
-        """Three-anchor base rate triangulation including 'consensus' key."""
+        """Base-rate inputs: 'susceptibility_prior', plus the anchors and 'consensus'
+        for a scenario without a ``base_rate_lef`` recipe (base_rate.py)."""
         ...
 
     @property

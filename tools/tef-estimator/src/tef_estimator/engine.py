@@ -9,16 +9,18 @@ a TEFResult with full audit trail.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
 from dataclasses import dataclass, field
 from datetime import date
 
-from tef_estimator.config import TEFConfig, get_config
+from tef_estimator.base_rate import lef_derivation, scenario_floor, scenario_lef
+from tef_estimator.config import TEFConfig, get_bundled_susceptibility_prior, get_config
 from tef_estimator.credibility import CredibilityBlender
 from tef_estimator.data.common import (
-    FLOOR_ANCHORS,
     PERTRange,
     DampeningConfig,
+    RevenueBand,
 )
 from tef_estimator.data.scenarios.base import ScenarioDefinition
 from tef_estimator.data.scenarios.ransomware import RansomwareScenario
@@ -33,6 +35,18 @@ from tef_estimator.vectors import (
     SupplyChainVector,
     VectorEstimate,
 )
+
+
+def _version() -> str:
+    from tef_estimator import __version__
+    return __version__
+
+
+@functools.cache
+def _bundled_editions() -> tuple[str, ...]:
+    """Bundled data files don't change within a process: read them once."""
+    from tef_estimator.refresh.validators import bundled_editions
+    return tuple(bundled_editions())
 
 
 class TEFEngine:
@@ -72,58 +86,87 @@ class TEFEngine:
                 max_composite=dp.max_composite,
             )
 
-        self.base_rate = base_rate_override or self._resolve_base_rate()
+        self.base_rate_override = base_rate_override
 
         # Initialize vector engines
         self.exploitation = ExploitationVector(self.dampening, config=self.config)
-        self.credential = CredentialVector(self.dampening)
+        self.credential = CredentialVector(self.dampening, config=self.config)
         self.phishing = PhishingVector(self.dampening)
         self.supply_chain = SupplyChainVector(self.dampening)
 
-    def _resolve_base_rate(self) -> PERTRange:
-        """Resolve base rate, rescaling if susceptibility prior differs from scenario default."""
-        consensus = self.scenario.base_rate_triangulation["consensus"]
+    def _frozen_provenance(self) -> str:
+        """One line naming the bundled editions, e.g. for "how current is this"."""
+        parts = list(_bundled_editions())
+        dshield = ((self.config.exploitation_ceiling_derivation or {})
+                   .get("dshield_snapshot") or {}).get("date")
+        if dshield:
+            parts.append(f"DShield {dshield}")
+        return (f"Inputs: frozen, bundled reference data (tef-estimator {_version()}): "
+                + ", ".join(parts))
+
+    def _susceptibility(self) -> PERTRange | None:
+        """The scenario's susceptibility prior, unless the user changed the configured one."""
         scenario_prior = self.scenario.base_rate_triangulation.get("susceptibility_prior")
         cfg_prior = self.config.susceptibility_prior
+        bundled = get_bundled_susceptibility_prior()
+        user_set = any(abs(getattr(cfg_prior, k) - bundled[k]) > 1e-9 for k in ("low", "mode", "high"))
+        if user_set or scenario_prior is None:
+            return PERTRange(cfg_prior.low, cfg_prior.mode, cfg_prior.high)
+        return scenario_prior
 
-        if scenario_prior is None:
-            return consensus
+    def _live_n_us(self) -> float | None:
+        live = (self.config.live_base_rate or {}).get(self.scenario.scenario_slug) or {}
+        return live.get("n_us")
 
-        default_low, default_mode, default_high = (
-            scenario_prior.low, scenario_prior.mode, scenario_prior.high
-        )
-        if (
-            abs(cfg_prior.low - default_low) < 1e-6
-            and abs(cfg_prior.mode - default_mode) < 1e-6
-            and abs(cfg_prior.high - default_high) < 1e-6
-        ):
-            return consensus
-
-        # TEF = LEF / susceptibility. When susceptibility changes, rescale:
-        # new_TEF_low = old_TEF_low × (old_susc_high / new_susc_high)
-        # new_TEF_mode = old_TEF_mode × (old_susc_mode / new_susc_mode)
-        # new_TEF_high = old_TEF_high × (old_susc_low / new_susc_low)
+    def base_rate_for(self, band: RevenueBand) -> PERTRange:
+        """Base rate (TEF) for a revenue band: LEF ÷ susceptibility on the scenario's
+        population, or its consensus TEF where it has no LEF recipe."""
+        if self.base_rate_override is not None:
+            return self.base_rate_override
+        prior = self._susceptibility()
+        lef = scenario_lef(self.scenario, band, self._live_n_us())
+        if lef is not None:
+            return PERTRange(lef.low / prior.high, lef.mode / prior.mode, lef.high / prior.low)
+        # Consensus TEF was derived with the scenario's prior: rescale to the one in use
+        consensus = self.scenario.base_rate_triangulation["consensus"]
+        scenario_prior = self.scenario.base_rate_triangulation.get("susceptibility_prior") or prior
         return PERTRange(
-            low=consensus.low * (default_high / cfg_prior.high),
-            mode=consensus.mode * (default_mode / cfg_prior.mode),
-            high=consensus.high * (default_low / cfg_prior.low),
+            low=consensus.low * (scenario_prior.high / prior.high),
+            mode=consensus.mode * (scenario_prior.mode / prior.mode),
+            high=consensus.high * (scenario_prior.low / prior.low),
         )
+
+    def base_rate_derivation(self, band: RevenueBand, base_rate: PERTRange) -> list[str]:
+        if self.base_rate_override is not None or getattr(self.scenario, "base_rate_lef", None) is None:
+            return [f"Base rate (TEF): {base_rate.low:.3g} / {base_rate.mode:.3g} / {base_rate.high:.3g} per year"]
+        prior = self._susceptibility()
+        return [
+            lef_derivation(self.scenario, band, self._live_n_us()),
+            f"÷ susceptibility {prior.high:g} / {prior.mode:g} / {prior.low:g} "
+            f"= base rate (TEF) {base_rate.low:.3g} / {base_rate.mode:.3g} / {base_rate.high:.3g} per year",
+        ]
 
     def estimate(self, profile: OrganizationProfile) -> TEFResult:
         """Run the full TEF estimation for a given organization profile."""
 
         # Allow analyst override of base rate
-        base_rate = self.base_rate
+        base_rate = self.base_rate_for(profile.revenue_band)
         if profile.custom_base_rate is not None:
             br = profile.custom_base_rate
             base_rate = PERTRange(br * 0.5, br, br * 2.0)
 
-        # --- Run all four vector engines ---
+        # --- Run the scenario's active vector engines ---
+        vector_engines = {
+            "exploitation": self.exploitation,
+            "credential": self.credential,
+            "phishing": self.phishing,
+            "supply_chain": self.supply_chain,
+        }
+        active = set(self.scenario.active_vectors)
         vectors: list[VectorEstimate] = [
-            self.exploitation.estimate(profile, base_rate, self.scenario),
-            self.credential.estimate(profile, base_rate, self.scenario),
-            self.phishing.estimate(profile, base_rate, self.scenario),
-            self.supply_chain.estimate(profile, base_rate, self.scenario),
+            engine.estimate(profile, base_rate, self.scenario)
+            for name, engine in vector_engines.items()
+            if name in active
         ]
 
         # --- Bühlmann credibility blending (if telemetry provided) ---
@@ -142,8 +185,7 @@ class TEFEngine:
 
         # --- Floor enforcement ---
         adjusted_sector = self.scenario.adjusted_sector_multiplier(profile.sector)
-        overall_floor = FLOOR_ANCHORS["overall_lower_bound"]
-        total_floor = overall_floor * adjusted_sector
+        total_floor = scenario_floor(self.scenario, profile.revenue_band) * adjusted_sector
 
         total_low = max(total_low, total_floor)
         total_median = max(total_median, total_floor)
@@ -162,16 +204,15 @@ class TEFEngine:
             high=total_high,
         )
 
-        # --- Triangulation validation ---
-        anchors, consensus = extract_anchors(
-            self.scenario.base_rate_triangulation
-        )
-        tri_result = triangulate(anchors, consensus)
+        # --- Triangulation validation (consensus scenarios only) ---
+        tri_result = None
+        if "consensus" in self.scenario.base_rate_triangulation:
+            anchors, consensus = extract_anchors(self.scenario.base_rate_triangulation)
+            tri_result = triangulate(anchors, consensus)
 
         # --- Validation checks ---
         checks = self._validate(
-            profile, vectors, total_median, total_floor, total_ceiling,
-            tri_result,
+            profile, vectors, total_median, total_floor, tri_result,
         )
         checks.extend(hardening_checks)
 
@@ -197,10 +238,14 @@ class TEFEngine:
             total_ceiling=total_ceiling,
             lognormal=lognormal,
             base_rate=base_rate,
+            base_rate_derivation=self.base_rate_derivation(profile.revenue_band, base_rate),
             dampening=self.dampening,
             validation_checks=checks,
             warnings=warnings,
             dispersion=dispersion,
+            input_provenance=list(self.config.input_provenance) or [self._frozen_provenance()],
+            sentence_template=self.scenario.output_templates.get("one_sentence", ""),
+            attempt_verb=self.scenario.output_templates.get("attempt_verb", ""),
         )
 
     def compare(
@@ -223,8 +268,7 @@ class TEFEngine:
                 continue
             direction = "increases" if delta > 0 else "decreases"
             explanation_parts.append(
-                f"{name} vector {direction} by {abs(delta):.5f} "
-                f"({abs(delta) * 100:.2f}pp)"
+                f"{name} vector {direction} by {abs(delta):.5f} per year"
             )
 
         if not explanation_parts:
@@ -232,8 +276,7 @@ class TEFEngine:
         else:
             direction = "increases" if total_delta > 0 else "decreases"
             explanation = (
-                f"Total TEF {direction} by {abs(total_delta):.5f} "
-                f"({abs(total_delta) * 100:.2f}pp). "
+                f"Total TEF {direction} by {abs(total_delta):.5f} per year. "
                 + " ".join(explanation_parts)
             )
 
@@ -264,7 +307,7 @@ class TEFEngine:
             br = PERTRange(cbr * 0.5, cbr, cbr * 2.0)
             sweep_profile = replace(profile, custom_base_rate=None)
         else:
-            br = self.base_rate
+            br = self.base_rate_for(profile.revenue_band)
             sweep_profile = profile
 
         low_engine = TEFEngine(
@@ -286,20 +329,12 @@ class TEFEngine:
         ))
 
         # Dampening k variations
-        for k_name, k_default, k_range in [
-            ("factor_k", self.dampening.factor_k, PERTRange(0.50, 0.70, 1.0)),
-            ("vector_k", self.dampening.vector_k, PERTRange(0.70, 0.85, 1.0)),
+        for k_name, k_range in [
+            ("factor_k", PERTRange(0.50, 0.70, 1.0)),
+            ("vector_k", PERTRange(0.70, 0.85, 1.0)),
         ]:
-            low_damp = DampeningConfig(
-                factor_k=k_range.low if k_name == "factor_k" else self.dampening.factor_k,
-                vector_k=k_range.low if k_name == "vector_k" else self.dampening.vector_k,
-                max_composite=self.dampening.max_composite,
-            )
-            high_damp = DampeningConfig(
-                factor_k=k_range.high if k_name == "factor_k" else self.dampening.factor_k,
-                vector_k=k_range.high if k_name == "vector_k" else self.dampening.vector_k,
-                max_composite=self.dampening.max_composite,
-            )
+            low_damp = dataclasses.replace(self.dampening, **{k_name: k_range.low})
+            high_damp = dataclasses.replace(self.dampening, **{k_name: k_range.high})
             low_eng = TEFEngine(scenario=self.scenario, dampening=low_damp, base_rate_override=br, config=self.config)
             high_eng = TEFEngine(scenario=self.scenario, dampening=high_damp, base_rate_override=br, config=self.config)
             low_r = low_eng.estimate(sweep_profile)
@@ -316,7 +351,6 @@ class TEFEngine:
         if profile.telemetry is not None:
             _ksens = self.config.k_sensitivity or {}
             k_ranges = {name: PERTRange(*vals) for name, vals in _ksens.items()}
-            ck = self.config.credibility_k
             for vec_name, k_range in k_ranges.items():
                 obs = profile.telemetry.get(vec_name)
                 if obs is None:
@@ -367,7 +401,6 @@ class TEFEngine:
         vectors: list[VectorEstimate],
         total_median: float,
         total_floor: float,
-        total_ceiling: float,
         tri_result=None,
     ) -> list[str]:
         """Internal consistency checks."""
@@ -382,23 +415,29 @@ class TEFEngine:
         else:
             checks.append(f"FAIL: Positioned ({total_median:.5f}) < Floor ({total_floor:.5f})")
 
-        if total_median <= total_ceiling:
-            checks.append(f"Positioned <= Ceiling: {total_median:.5f} <= {total_ceiling:.2f}")
-        else:
-            checks.append(f"FAIL: Positioned ({total_median:.5f}) > Ceiling ({total_ceiling:.2f})")
+        # Per vector: the ceiling is a sanity check, a logical maximum; a median
+        # above it means the positioning and the ceiling disagree (never capped)
+        for v in vectors:
+            if v.positioned_median <= v.ceiling:
+                checks.append(f"{v.vector_name} median <= ceiling: "
+                              f"{v.positioned_median:.5f} <= {v.ceiling:.5g}")
+            else:
+                checks.append(f"ABOVE CEILING: {v.vector_name} median {v.positioned_median:.5f} "
+                              f"> ceiling {v.ceiling:.5g}")
 
-        iris_lef = FLOOR_ANCHORS["overall_lower_bound"]
+        observed_lef = scenario_floor(self.scenario, profile.revenue_band)
         for susc in [0.05, 0.15, 0.30]:
             implied_lef = total_median * susc
-            ratio = implied_lef / iris_lef if iris_lef > 0 else float("inf")
+            ratio = f"{implied_lef / observed_lef:.1f}x observed floor" if observed_lef > 0 else "no observed floor"
             checks.append(
-                f"At susceptibility {susc:.0%}: implied LEF = {implied_lef:.5f} "
-                f"({ratio:.1f}x IRIS floor)"
+                f"At susceptibility {susc:.0%}: implied LEF = {implied_lef:.5f} ({ratio})"
             )
 
-        if total_median > 0:
+        # Shares of the summed vectors (before cross-vector dampening), so they add to 100%
+        raw_total = sum(v.positioned_median for v in vectors)
+        if raw_total > 0:
             for v in vectors:
-                pct = (v.positioned_median / total_median) * 100
+                pct = (v.positioned_median / raw_total) * 100
                 checks.append(f"{v.vector_name} vector: {pct:.0f}% of total TEF")
 
         return checks
@@ -416,16 +455,15 @@ class TEFEngine:
 
         if abs(total_median - total_floor) / max(total_floor, 1e-10) < 0.1:
             warnings.append(
-                "Floor is binding: the IRIS observed LEF is more informative than "
+                "Floor is binding: the observed LEF is more informative than "
                 "the base-rate-plus-adjustments approach for this profile. The "
                 "positioned estimate adds limited value beyond the empirical floor."
             )
 
         if profile.revenue_band.value in ("under_10m", "10m_100m"):
             warnings.append(
-                "IRIS under-counts small/mid-market firms due to disclosure requirements. "
-                "The floor is differentially conservative for this cohort (2-5x gap). "
-                "Coalition insurer data provides a better anchor."
+                "IRIS counts only publicly reported events, which under-counts small and "
+                "mid-market firms: the observed floor is especially conservative for this cohort."
             )
 
         if profile.geography not in (profile.geography.US,):
@@ -446,12 +484,6 @@ class TEFEngine:
             f"{self.dampening.factor_k_source}"
         )
 
-        try:
-            from tef_estimator.refresh.validators import check_freshness
-            warnings.extend(check_freshness())
-        except Exception:
-            pass
-
         return warnings
 
     def _apply_credibility(
@@ -470,7 +502,7 @@ class TEFEngine:
             return warnings, checks
 
         # Use this engine's k values (not the global config) so per-vector k sweeps take effect.
-        blender = CredibilityBlender(k_overrides=dataclasses.asdict(self.config.credibility_k))
+        blender = CredibilityBlender(vector_k=dataclasses.asdict(self.config.credibility_k))
         for v in vectors:
             obs = profile.telemetry.get(v.telemetry_key)
             if obs is None:
@@ -591,12 +623,12 @@ class CompareResult:
         ]
         for name, delta in self.vector_deltas.items():
             sign = "+" if delta >= 0 else ""
-            lines.append(f"  {name:<15} {sign}{delta:.5f} ({sign}{delta * 100:.2f}pp)")
+            lines.append(f"  {name:<15} {sign}{delta:.5f} per year")
 
         sign = "+" if self.total_delta >= 0 else ""
         lines.extend([
             "",
-            f"  {'TOTAL':<15} {sign}{self.total_delta:.5f} ({sign}{self.total_delta * 100:.2f}pp)",
+            f"  {'TOTAL':<15} {sign}{self.total_delta:.5f} per year",
             "",
             f"Explanation: {self.explanation}",
         ])
@@ -653,7 +685,7 @@ class SensitivityResult:
         lines = [
             "SENSITIVITY ANALYSIS",
             "=" * 60,
-            f"Baseline TEF: {self.baseline_median:.5f} ({self.baseline_median * 100:.2f}%)",
+            f"Baseline TEF: {self.baseline_median:.5f} per year",
             "",
             f"{'Parameter':<25} {'Low':<12} {'High':<12} {'Range':>8}",
             "-" * 60,

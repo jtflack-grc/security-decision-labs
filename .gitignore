@@ -209,8 +209,5 @@ __marimo__/
 # Release planning notes (local only, never published)
 RELEASE-*.md
 
-# Maintainer-only: copies from local Substrata exports, not published
-tools/tef-estimator/scripts/refresh_reference_data.py
-
 # Runtime artifact: `refresh validate` overwrites it in place
 tools/tef-estimator/src/tef_estimator/data/refresh_log.json

@@ -7,9 +7,9 @@ Not directly observable -- occurs through trusted channels.
 
 from __future__ import annotations
 
+from tef_estimator.base_rate import geo_multiplier, scenario_floor
 from tef_estimator.data.common import (
     FLOOR_ANCHORS,
-    GEO_MULTIPLIERS,
     PERTRange,
     PROFILE_MULTIPLIERS,
     DampeningConfig,
@@ -27,7 +27,7 @@ class SupplyChainVector:
     This is the smallest proportion (~5-8%) and the hardest to estimate
     from external data. Stays as a simpler model given data limitations.
 
-    Floor: IRIS observed LEF x supply chain proportion
+    Floor: observed LEF (scenario_floor) x supply chain proportion
     Ceiling: IR report third-party involvement rate x base rate
     Positioning: base rate x supply chain proportion x binary profile adjustment
     """
@@ -47,9 +47,9 @@ class SupplyChainVector:
         sc_proportion = scenario.vector_proportions["supply_chain"]
 
         # --- Floor ---
-        overall_floor = FLOOR_ANCHORS["overall_lower_bound"]
+        overall_floor = scenario_floor(scenario, profile.revenue_band)
         floor = overall_floor * sc_proportion.mode * adjusted_sector
-        trace.add_step("IRIS overall floor", overall_floor, "=", "IRIS 2025 observed LEF", overall_floor)
+        trace.add_step("Observed floor", overall_floor, "=", "observed LEF lower bound for the revenue tier", overall_floor)
         trace.add_step("Supply chain proportion", sc_proportion.mode, "x", "IR report vector split", overall_floor * sc_proportion.mode)
         trace.add_step("Sector adjustment", adjusted_sector, "x", f"IRIS x {scenario.scenario_name} share", floor)
 
@@ -81,12 +81,12 @@ class SupplyChainVector:
             )
 
         # Geography
-        geo_mult = GEO_MULTIPLIERS[profile.geography]
+        geo_mult = geo_multiplier(scenario, profile.geography)
         multipliers.append(geo_mult)
 
         # Trace multipliers
         sc_base_mode = base_rate.mode * sc_proportion.mode
-        trace.add_step("Base rate (mode)", base_rate.mode, "=", "Three-anchor consensus", base_rate.mode)
+        trace.add_step("Base rate (mode)", base_rate.mode, "=", "scenario base rate (see base rate derivation)", base_rate.mode)
         trace.add_step("Supply chain proportion", sc_proportion.mode, "x", "Vector split", sc_base_mode)
         running = sc_base_mode
         mult_meta = [
@@ -105,14 +105,12 @@ class SupplyChainVector:
         raw_composite = 1.0
         for m in multipliers:
             raw_composite *= m.mode
-        dampened = dampen_composite(
-            raw_composite, self.dampening.factor_k, self.dampening.max_composite
-        )
+        composite = dampen_composite(raw_composite, self.dampening.factor_k, self.dampening.max_composite)
         trace.add_step("Raw composite", raw_composite, "=", "Product of all multipliers", raw_composite)
-        trace.add_step("Dampened composite", dampened, "dampened()", f"k={self.dampening.factor_k}, max={self.dampening.max_composite}", dampened)
+        trace.add_step("Dampened composite", composite, "dampened()", f"k={self.dampening.factor_k}, max={self.dampening.max_composite}", composite)
 
-        positioned_median = sc_base_mode * dampened
-        trace.add_step("Positioned median", positioned_median, "=", "base x proportion x dampened", positioned_median)
+        positioned_median = sc_base_mode * composite
+        trace.add_step("Positioned median", positioned_median, "=", "base x proportion x composite", positioned_median)
 
         positioned_low = base_rate.low * sc_proportion.low * dampen_composite(
             _product([m.low for m in multipliers]),

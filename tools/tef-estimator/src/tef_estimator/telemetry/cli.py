@@ -37,15 +37,10 @@ def collect(
     force: bool = typer.Option(False, "--force", help="Ignore cadence schedule"),
     db_path: Path = typer.Option(None, "--db-path", help="Custom database path"),
 ):
-    """Run telemetry collectors (all or a specific source)."""
+    """Run telemetry collectors (all or a specific source), then integrate new data."""
+    from tef_estimator.telemetry.scheduler import run_due_collections
     db = _db_from_path(db_path)
-
-    if force and source is None:
-        from tef_estimator.telemetry.collectors import collect_all
-        results = collect_all(db)
-    else:
-        from tef_estimator.telemetry.scheduler import run_due_collections
-        results = run_due_collections(db, force=force, source_filter=source)
+    results = run_due_collections(db, force=force, source_filter=source)
 
     table = Table(title="Collection Results")
     table.add_column("Source", style="bold")
@@ -62,6 +57,29 @@ def collect(
             str(r.get("records_skipped", "")),
         )
 
+    console.print(table)
+
+
+@app.command()
+def integrate(
+    source: str = typer.Option(None, "--source", help="Integrate only this source"),
+    db_path: Path = typer.Option(None, "--db-path", help="Custom database path"),
+):
+    """Rebuild the daily series and rolling averages from stored data (no downloads).
+
+    Collection integrates only when it brings new data; run this after an
+    upgrade that changes integration, so the stored data is reprocessed.
+    """
+    from tef_estimator.telemetry.integrator import run_integration
+    db = _db_from_path(db_path)
+    result = run_integration(db, source_filter=source)
+
+    table = Table(title="Integration Results")
+    table.add_column("Source", style="bold")
+    table.add_column("Rows written", justify="right")
+    for r in result["per_source"]:
+        written = r.get("inserted", 0) + r.get("derived_series", {}).get("inserted", 0)
+        table.add_row(r["source"], str(written))
     console.print(table)
 
 
@@ -119,6 +137,17 @@ def compare_cmd(
     db = _db_from_path(db_path)
     result = compare(db, threshold=threshold)
 
+    if result.new_metrics:
+        console.print(
+            f"[yellow]{len(result.new_metrics)} new metric(s) baselined, "
+            f"not yet comparable: {', '.join(result.new_metrics)}[/yellow]"
+        )
+    if result.missing_metrics:
+        console.print(
+            f"[red]{len(result.missing_metrics)} baseline metric(s) missing from "
+            f"current data (collector stopped?): {', '.join(result.missing_metrics)}[/red]"
+        )
+
     if not result.has_signals:
         console.print(
             f"[green]No signals detected ({result.metrics_checked} metrics checked, "
@@ -154,17 +183,34 @@ def watch(
     threshold: float = typer.Option(0.20, "--threshold", help="Signal threshold"),
     db_path: Path = typer.Option(None, "--db-path", help="Custom database path"),
     max_cycles: int = typer.Option(None, "--max-cycles", help="Stop after N cycles"),
+    profiles_file: Path = typer.Option(
+        None, "--profiles",
+        help="JSON list of watched profiles to re-estimate when signals fire",
+    ),
+    live: bool = typer.Option(
+        None, "--live/--frozen",
+        help="Re-estimate with telemetry-derived inputs (--live) or bundled values "
+             "only (--frozen). Default: config telemetry_inputs (frozen)",
+    ),
 ):
     """Run continuous monitoring (collect → compare → re-estimate loop)."""
-    from tef_estimator.telemetry.watch import watch_loop
+    from tef_estimator.telemetry.watch import load_watch_profiles, watch_loop
     db = _db_from_path(db_path)
+    profiles = load_watch_profiles(profiles_file) if profiles_file else None
     console.print(
         f"[bold]Starting watch mode[/bold] "
-        f"(interval={interval}m, threshold={threshold:.0%})"
+        f"(interval={interval}m, threshold={threshold:.0%}, "
+        f"{len(profiles) if profiles else 'no'} watched profile(s))"
     )
+    if not profiles:
+        console.print(
+            "[yellow]No --profiles given: signals are reported, nothing is re-estimated.[/yellow]"
+        )
     watch_loop(
         db,
         interval_minutes=interval,
         threshold=threshold,
         max_cycles=max_cycles,
+        profiles=profiles,
+        live=live,
     )

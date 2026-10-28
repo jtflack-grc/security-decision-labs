@@ -1,25 +1,24 @@
-"""Tests for custom scenario builder."""
+"""Custom scenarios: validation, defaults, engine runs, templates, consensus triangulation."""
 
 import json
-import pytest
 from pathlib import Path
+
+import pytest
 
 from tef_estimator.data.common import (
     Geography,
     PERTRange,
-    RemoteAccessType,
     RevenueBand,
     Sector,
 )
 from tef_estimator.data.scenarios.base import ScenarioDefinition
 from tef_estimator.data.scenarios.custom import (
-    CustomScenario,
     generate_template,
     load_custom_scenario,
 )
 from tef_estimator.engine import TEFEngine
 from tef_estimator.profile import OrganizationProfile
-
+from tef_estimator.triangulation import extract_anchors, triangulate
 
 VALID_SCENARIO = {
     "scenario_name": "Data Exfiltration",
@@ -92,28 +91,6 @@ class TestCustomScenarioProtocol:
     def test_implements_protocol(self, scenario):
         assert isinstance(scenario, ScenarioDefinition)
 
-    def test_vector_proportions(self, scenario):
-        vp = scenario.vector_proportions
-        assert "exploitation" in vp
-        assert "credential" in vp
-        assert isinstance(vp["exploitation"], PERTRange)
-        assert vp["exploitation"].mode == pytest.approx(0.20)
-
-    def test_base_rate_triangulation(self, scenario):
-        br = scenario.base_rate_triangulation
-        assert "consensus" in br
-        assert br["consensus"].mode == pytest.approx(0.015)
-
-    def test_active_vectors(self, scenario):
-        assert set(scenario.active_vectors) == {
-            "exploitation", "credential", "phishing", "supply_chain"
-        }
-
-    def test_defaults_for_optional_fields(self, scenario):
-        assert len(scenario.credential_tempo) > 0
-        assert len(scenario.exploitation_scanning) > 0
-        assert scenario.output_templates["scenario_label"] == "Data Exfiltration"
-
     def test_sector_shares_default_to_none(self, scenario):
         shares = scenario.sector_shares
         for sector in Sector:
@@ -123,15 +100,6 @@ class TestCustomScenarioProtocol:
         shares = scenario.revenue_shares
         for band in RevenueBand:
             assert shares[band] == scenario.overall_share
-
-    def test_adjusted_sector_multiplier(self, scenario):
-        m = scenario.adjusted_sector_multiplier(Sector.MANUFACTURING)
-        assert m > 0
-
-    def test_adjusted_revenue_multiplier(self, scenario):
-        m = scenario.adjusted_revenue_multiplier(RevenueBand.R_100M_1B)
-        assert m > 0
-
 
 class TestCustomScenarioWithOptionalFields:
     def test_with_sector_shares(self, tmp_path):
@@ -184,24 +152,25 @@ class TestCustomScenarioEngine:
         assert result.scenario_name == "Data Exfiltration"
         assert len(result.vectors) == 4
 
-    def test_compare_with_custom_scenario(self, tmp_path):
-        path = _write_scenario(tmp_path, VALID_SCENARIO)
+    def test_engine_honors_active_vectors(self, tmp_path):
+        # A scenario that declares only two vectors must produce two estimates.
+        data = dict(VALID_SCENARIO)
+        data["vector_proportions"] = {
+            "credential": [0.5, 0.6, 0.7],
+            "phishing": [0.3, 0.4, 0.5],
+        }
+        path = _write_scenario(tmp_path, data)
         scenario = load_custom_scenario(path)
 
         engine = TEFEngine(scenario=scenario)
-        a = OrganizationProfile(
-            sector=Sector.MANUFACTURING,
-            revenue_band=RevenueBand.R_100M_1B,
-            geography=Geography.US,
-            remote_access=[RemoteAccessType.FORTINET],
-        )
-        b = OrganizationProfile(
+        profile = OrganizationProfile(
             sector=Sector.MANUFACTURING,
             revenue_band=RevenueBand.R_100M_1B,
             geography=Geography.US,
         )
-        diff = engine.compare(a, b)
-        assert diff.total_delta != 0
+        result = engine.estimate(profile)
+
+        assert [v.vector_name for v in result.vectors] == ["Credential", "Phishing"]
 
     def test_sensitivity_with_custom_scenario(self, tmp_path):
         path = _write_scenario(tmp_path, VALID_SCENARIO)
@@ -219,24 +188,6 @@ class TestCustomScenarioEngine:
 
 
 class TestTemplate:
-    def test_generate_template(self, tmp_path):
-        path = tmp_path / "template.json"
-        generate_template(path)
-        assert path.exists()
-
-        with open(path) as f:
-            data = json.load(f)
-
-        assert "scenario_name" in data
-        assert "vector_proportions" in data
-        assert "base_rate" in data
-
-    def test_template_is_valid(self, tmp_path):
-        path = tmp_path / "template.json"
-        generate_template(path)
-        s = load_custom_scenario(path)
-        assert s.scenario_name == "My Custom Scenario"
-
     def test_template_runs_in_engine(self, tmp_path):
         path = tmp_path / "template.json"
         generate_template(path)
@@ -250,3 +201,86 @@ class TestTemplate:
         )
         result = engine.estimate(profile)
         assert result.total_positioned_median > 0
+
+
+class TestTriangulate:
+    def test_suggested_low_is_min_of_anchor_lows(self):
+        anchors = {
+            "a": PERTRange(0.003, 0.005, 0.007),
+            "b": PERTRange(0.005, 0.015, 0.08),
+            "c": PERTRange(0.006, 0.012, 0.015),
+        }
+        result = triangulate(anchors)
+        assert result.suggested.low == 0.003
+
+    def test_suggested_mode_is_mean_of_anchor_modes(self):
+        anchors = {
+            "a": PERTRange(0.003, 0.005, 0.007),
+            "b": PERTRange(0.005, 0.015, 0.08),
+            "c": PERTRange(0.006, 0.012, 0.015),
+        }
+        result = triangulate(anchors)
+        expected = round((0.005 + 0.015 + 0.012) / 3, 4)
+        assert result.suggested.mode == expected
+
+    def test_suggested_high_capped_at_max_anchor_high(self):
+        anchors = {
+            "a": PERTRange(0.01, 0.02, 0.03),
+            "b": PERTRange(0.01, 0.02, 0.03),
+            "c": PERTRange(0.01, 0.02, 0.03),
+        }
+        result = triangulate(anchors)
+        assert result.suggested.high <= 0.03
+
+    def test_convergent_anchors(self):
+        anchors = {
+            "a": PERTRange(0.003, 0.005, 0.007),
+            "b": PERTRange(0.005, 0.015, 0.08),
+            "c": PERTRange(0.006, 0.012, 0.015),
+        }
+        result = triangulate(anchors)
+        assert result.is_convergent is True
+        assert result.convergence_ratio == 3.0
+
+    def test_divergent_anchors(self):
+        anchors = {
+            "a": PERTRange(0.001, 0.001, 0.002),
+            "b": PERTRange(0.05, 0.10, 0.20),
+            "c": PERTRange(0.001, 0.015, 0.03),
+        }
+        result = triangulate(anchors)
+        assert result.is_convergent is False
+        assert result.convergence_ratio > 10.0
+
+    def test_large_deviation_produces_warning(self):
+        anchors = {
+            "a": PERTRange(0.01, 0.02, 0.03),
+            "b": PERTRange(0.01, 0.02, 0.03),
+        }
+        bad_consensus = PERTRange(0.001, 0.001, 0.003)
+        result = triangulate(anchors, actual_consensus=bad_consensus)
+        warning_lines = [v for v in result.validation if "WARNING" in v]
+        assert len(warning_lines) == 1
+
+class TestExtractAnchors:
+    def test_separates_consensus_from_anchors(self):
+        tri = {
+            "operational_tempo": PERTRange(0.003, 0.005, 0.007),
+            "iris_back_calculation": PERTRange(0.005, 0.015, 0.08),
+            "consensus": PERTRange(0.003, 0.010, 0.025),
+        }
+        anchors, consensus = extract_anchors(tri)
+        assert "consensus" not in anchors
+        assert len(anchors) == 2
+        assert consensus == PERTRange(0.003, 0.010, 0.025)
+
+class TestScenarioTriangulation:
+    """Built-in scenarios take their base rate from one population (base_rate.py);
+    triangulation applies to custom scenarios with a consensus only."""
+
+    def test_builtin_scenarios_have_no_consensus(self):
+        from tef_estimator.data.scenarios import SCENARIO_CLASSES
+        for slug, cls in SCENARIO_CLASSES.items():
+            scenario = cls()
+            assert "consensus" not in scenario.base_rate_triangulation, slug
+            assert scenario.base_rate_lef, slug

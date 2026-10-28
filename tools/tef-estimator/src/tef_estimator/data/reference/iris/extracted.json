@@ -3,9 +3,11 @@
     "source": "Cyentia IRIS 2025 + IRIS Ransomware Spotlight",
     "vintage": "IRIS 2025: 150k+ events 2008-2024; IRIS Ransomware: 14k+ events 2019-2023",
     "extracted_date": "2026-05-24",
+    "edition": "IRIS 2025",
+    "cadence_months": 12,
     "extracted_by": "Laura Voicu"
   },
-  "_substrata_assessment": {
+  "_source_assessment": {
     "source_id": "iris",
     "verdict": "pass",
     "methodology_transparency": "detailed",
@@ -94,7 +96,7 @@
       "event_count_2019_2023": 72
     },
     "other": {
-      "all_incident_multiplier": 1.0,
+      "all_incident_multiplier": 0.92,
       "event_count_2019_2023": null
     },
     "_derivation_method": "extracted",
@@ -124,11 +126,12 @@
     "_quality_tier": 2
   },
   "floor_anchors": {
-    "_citation": "IRIS Ransomware Spotlight, Table 3 — Annual probability of cyber events",
-    "overall_upper_bound": 0.1,
-    "overall_lower_bound": 0.00465,
+    "_citation": "IRIS Ransomware Spotlight, Figure 8 — Annual probability of cyber events, model: lower bound (all organizations) and upper bound (organizations with a past incident). P(≥1) = 1 − P(0).",
+    "overall_upper_bound": 0.106,
+    "overall_lower_bound": 0.00486,
     "_derivation_method": "extracted",
-    "_quality_tier": 2
+    "_quality_tier": 2,
+    "_values_note": "Upper: P(0) 89.4% → P(≥1) 10.6% (P(exactly 1) 9.94%). Lower: P(0) 99.5%, P(exactly 1) 0.465% + P(2) 0.0199% + P(3) 0.00111% → P(≥1) 0.486%."
   },
   "ransomware_overall_share": {
     "_citation": "IRIS Ransomware Spotlight, Table 1 — Ransomware as proportion of all incidents",
@@ -137,38 +140,38 @@
     "_quality_tier": 2
   },
   "ransomware_sector_shares": {
-    "_citation": "IRIS Ransomware Spotlight, Figure 13 — Ransomware proportion by sector",
+    "_citation": "IRIS Ransomware Spotlight, Figure 5 — Ransomware share of incidents by sector. Agriculture/Mining and Retail/Trade are combined bars in the figure, so each sector gets the combined value; construction is not in the figure.",
     "education": 0.5,
-    "information": null,
-    "professional": null,
+    "information": 0.23,
+    "professional": 0.35,
     "financial": 0.16,
     "healthcare": 0.22,
-    "public": null,
-    "retail": 0.4,
-    "hospitality": 0.73,
-    "management": 0.4,
+    "public": 0.21,
+    "retail": 0.39,
+    "hospitality": 0.31,
+    "management": 0.5,
     "manufacturing": 0.51,
-    "trade": null,
-    "entertainment": null,
-    "real_estate": null,
-    "administrative": 0.32,
-    "agriculture": null,
+    "trade": 0.39,
+    "entertainment": 0.3,
+    "real_estate": 0.42,
+    "administrative": 0.3,
+    "agriculture": 0.51,
     "construction": null,
     "transportation": 0.43,
-    "mining": null,
-    "utilities": null,
+    "mining": 0.51,
+    "utilities": 0.42,
     "other": null,
     "_derivation_method": "extracted",
     "_quality_tier": 2
   },
   "ransomware_sector_loss_shares": {
-    "_citation": "IRIS Ransomware Spotlight, Figure 13 — Ransomware loss share by sector",
+    "_citation": "IRIS Ransomware Spotlight, Figure 13 — Ransomware share of losses by sector",
     "education": 0.79,
     "information": 0.19,
-    "professional": 0.04,
-    "financial": 0.1,
+    "professional": 0.1,
+    "financial": 0.04,
     "healthcare": 0.63,
-    "public": 0.15,
+    "public": 0.14,
     "retail": 0.4,
     "hospitality": 0.73,
     "management": 0.4,
@@ -207,5 +210,14 @@
     "over_100b": 0.025,
     "_derivation_method": "extracted",
     "_quality_tier": 2
+  },
+  "all_incident_lower_bound_2022": {
+    "_citation": "IRIS 2022 Table 2, lower bound: probability of >= 1 publicly reported cyber event per year, all incident types, over all D&B-registered US organizations in the tier (verified against the PDF 2026-10-26). No model under $10M.",
+    "under_10m": 0.0,
+    "10m_100m": 0.0046,
+    "100m_1b": 0.0218,
+    "1b_10b": 0.0656,
+    "10b_100b": 0.142,
+    "over_100b": 0.293
   }
 }

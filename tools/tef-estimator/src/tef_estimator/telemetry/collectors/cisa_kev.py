@@ -45,7 +45,7 @@ class CISAKEVCollector:
         payload_hash = TelemetryDB.compute_hash(response.text)
         last_hash = db.get_last_hash(SOURCE_ID)
 
-        if payload_hash == last_hash:
+        if payload_hash == last_hash and not kwargs.get("force"):
             log.info("KEV catalog unchanged (hash match)")
             conn = db.connect()
             db.update_source_health(conn, SOURCE_ID, True, "No changes detected")

@@ -32,7 +32,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from itertools import combinations
-from math import sqrt, log, exp
+from math import sqrt
 from typing import Any
 
 import numpy as np
@@ -198,7 +198,7 @@ def parse_vcdb(vcdb_path: str) -> tuple[list[dict], int]:
             with open(f, "r", encoding="utf-8") as fh:
                 incident = json.load(fh)
             incidents.append(incident)
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             errors += 1
 
     return incidents, errors
@@ -379,7 +379,7 @@ def derive_dampening(analysis: dict) -> dict:
 
     # Compute median lift (more robust to outliers than mean)
     # Exclude lift=0 (zero co-occurrence) from median since 0 is a boundary
-    nonzero_lifts = sorted([l for l in lifts if l > 0])
+    nonzero_lifts = sorted([lift for lift in lifts if lift > 0])
     median_lift = nonzero_lifts[len(nonzero_lifts) // 2] if nonzero_lifts else float("nan")
     k_from_median = (
         max(0.5, min(1.0, 1.0 / median_lift))

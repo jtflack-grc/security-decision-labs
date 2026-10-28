@@ -1,21 +1,32 @@
 {
   "_metadata": {
     "scenario": "data_exfiltration",
-    "description": "Data exfiltration scenario — TEF-D1",
-    "status": "Substrata-grounded",
+    "description": "Data exfiltration scenario",
+    "status": "derived",
     "extracted_date": "2026-07-24",
-    "extracted_by": "Laura Voicu",
-    "_data_sources_needed": [
-      "IRIS non-RW LEF",
-      "DBIR exfil shares",
-      "Coalition non-RW claims"
-    ]
+    "cadence_months": 12,
+    "extracted_by": "Laura Voicu"
   },
   "base_rate_triangulation": {
-    "_citation": "Coalition 2025 (ransomware_share 0.297), IRIS 2025 baseline",
+    "_citation": "One population (US organizations), one role per source: FBI IC3 data-breach complaints set the base rate, IRIS the floor. TEF = LEF ÷ susceptibility.",
     "susceptibility_prior": [0.10, 0.20, 0.30],
-    "consensus": [0.008, 0.025, 0.07],
-    "consensus_note": "Non-ransomware LEF anchored in Coalition 2025 (70.3% of claims are non-RW) x IRIS baseline. Mode 2.5% = ~0.7 x IRIS mid-market mode 3.5%."
+    "_susceptibility_prior_note": "Judgment."
+  },
+  "base_rate_lef": {
+    "_method": "IC3 recipe on US organizations: US data-breach complaints per year × under-reporting ÷ US firms in the revenue tier × the tier's share of victims.",
+    "geography": "us",
+    "n_us": 3963,
+    "_n_us_note": "FBI IC3 2025 report, complaints by crime type: Data Breach 3,963 (defined as computer intrusion to acquire confidential or secure information; separate from Ransomware and from Personal Data Breach, which counts individuals).",
+    "underreporting": [1.46, 1.61, 3.85],
+    "_underreporting_note": "Low and mode measured on ransomware: IC3 2025 Ransomware complaints 3,611 ÷ US ransomware victims (3,971 leak-site victims × under-reporting 1.33 / 1.46 / 1.75, ransomware.json) = IC3 filing rate 0.68 / 0.62 / 0.52; multiplier = 1 ÷ that. High 3.85 (judgment, labelled): data-breach victims file with IC3 half as often as ransomware victims at their lowest rate (1.925 × 2), since breaches go to regulators and the people affected rather than the FBI. Check: IC3's 3,963 data-breach complaints already exceed ITRC's 2,527 publicly notified US cyberattack compromises in 2024, which argues against a much larger multiplier.",
+    "tiers": {
+      "under_10m": {"bands": ["under_10m"], "us_firms": 6077095, "victim_share": 0.230},
+      "10m_100m": {"bands": ["10m_100m"], "us_firms": 283144, "victim_share": 0.206},
+      "100m_plus": {"bands": ["100m_1b", "1b_10b", "10b_100b", "over_100b"], "us_firms": 31035, "victim_share": 0.215,
+                    "revenue_gradient_from": "100m_1b"}
+    },
+    "_tier_note": "US firms per tier: Census SUSB 2022 (1–39 / 40–299 / 300–2,499 employees, as for ransomware). Victim shares: VCDB US incidents 2010–2024 with an external actor and confirmed data disclosure, ransomware excluded (1,086), employee classes split log-uniformly at 40, 300 and 2,500 employees (scripts/exfiltration_victim_shares.py): 0.230 / 0.206 / 0.215, and 0.349 for 2,500+ employees. VCDB is built from public reports, which over-represent large victims: measured directly, the 2,500+ tier (4,361 firms) gives about 0.6 loss events per firm-year, above IRIS 2022's all-incident upper bounds (17–29%), as Coveware did for ransomware. So from $1B the rate is the measured $100M–1B rate × IRIS's all-incident revenue multipliers relative to $100M–1B (IRIS 2025 Fig A2: 1.2 / 2.49 / 3.46 ÷ 0.8).",
+    "_geography_note": "The base rate counts US events over US firms, so the geography multiplier is relative to the US (US = 1.0)."
   },
   "vector_proportions": {
     "_citation": "DBIR 2026 vector shares, adjusted for exfiltration pattern (DBIR 2025 Espionage)",
@@ -30,18 +41,18 @@
     "value": 0.08
   },
   "exfiltration_sector_shares": {
-    "_citation": "Derived from sector_multipliers x overall_share. Not directly measured — tracks all-incident ratios from IRIS 2025 Figure A1.",
+    "_citation": "No exfiltration-specific sector data. All null: the tool uses the IRIS 2025 all-incident sector multiplier (Figure A1) once.",
     "_badge": "gray",
-    "healthcare": 0.107,
-    "financial": 0.115,
-    "information": 0.124,
-    "manufacturing": 0.082,
-    "retail": 0.095,
-    "education": 0.128,
-    "public": 0.107,
-    "professional": 0.120,
-    "utilities": 0.050,
-    "transportation": 0.062
+    "healthcare": null,
+    "financial": null,
+    "information": null,
+    "manufacturing": null,
+    "retail": null,
+    "education": null,
+    "public": null,
+    "professional": null,
+    "utilities": null,
+    "transportation": null
   },
   "exfiltration_revenue_shares": {
     "_citation": "No exfiltration-specific revenue breakdown available. Uses all-incident shares from IRIS 2025.",
@@ -63,30 +74,18 @@
     "10b_100b": null,
     "over_100b": null
   },
-  "sector_multipliers": {
-    "_citation": "IRIS 2025 Figure A1 sector multipliers (exfiltration pattern tracks all-incident)",
-    "healthcare": 1.34,
-    "financial": 1.44,
-    "information": 1.55,
-    "manufacturing": 1.03,
-    "retail": 1.19,
-    "education": 1.60,
-    "public": 1.34,
-    "professional": 1.50,
-    "utilities": 0.62,
-    "transportation": 0.78
-  },
   "credential_tempo": {
-    "_citation": "Exfiltration credential vector uses same tempo data as ransomware (Recorded Future + IR reports). Both attack types target the same credential markets.",
-    "_badge": "amber",
-    "global_campaigns_per_month": [500, 1200, 3000],
-    "credential_proportion": [0.35, 0.50, 0.65],
+    "_citation": "Ransomware credential tempo scaled by the exfiltration-to-ransomware claim ratio: NetDiligence Cyber Claims Study 2025, Figure 51 (N=10,402 claims, 2020-2024): hacker 15%, ransomware 26% (verified against the PDF 2026-10-24).",
+    "_derivation": "campaigns/month = ransomware [1,000, 2,000, 3,000] × 0.15/0.26 = [577, 1,154, 1,731]; credential_proportion = this scenario's credential vector share; addressable population as for ransomware (global, the same campaign markets). Bias: insured claims only, and 'hacker' is the closest NetDiligence cause to non-ransomware data theft.",
+    "global_campaigns_per_month": [577, 1154, 1731],
+    "credential_proportion": [0.35, 0.45, 0.55],
     "addressable_population": [5000000, 10000000, 15000000]
   },
   "exploitation_scanning": {
     "_citation": "GreyNoise-derived scanning telemetry. Exfiltration uses same scanning infrastructure as ransomware for initial access.",
     "_badge": "amber",
-    "grn_malicious_rate": [0.15, 0.32, 0.45],
+    "grn_malicious_rate": [0.20, 0.28, 0.35],
+    "grn_malicious_rate_note": "Shared with ransomware: the GreyNoise IP-level malicious rate describes scanning, not the scenario; the scenario enters through ransomware_proportion_of_scanning and PoA.",
     "grn_session_malicious_rate": 0.037,
     "grn_suspicious_rate": null,
     "campaign_ip_ratio_lognormal_mu": 4.0,
@@ -99,6 +98,6 @@
   "output_templates": {
     "scenario_label": "Data Exfiltration",
     "attempt_verb": "attempt data exfiltration against",
-    "one_sentence": "Based on industry data, threat actors {attempt_verb} organizations matching your profile roughly once every {recurrence_years:.0f} years (range: {low_yr:.0f}-{high_yr:.0f} years). This measures how often adversaries TRY -- not how often they succeed. Success probability depends on your controls (assessed separately)."
+    "one_sentence": "Based on industry data, threat actors {attempt_verb} organizations matching your profile {recurrence} (range: {low} to {high})."
   }
 }

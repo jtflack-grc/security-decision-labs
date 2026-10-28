@@ -56,7 +56,7 @@ Cross-source vector proportion data (`data/reference/vectors/initial_access_vect
 
 Each record includes extraction provenance, source verdicts, bias propagation tags, and quality tier assessments. All values were manually verified from source PDFs.
 
-Additional data sources (Coalition, DShield, CISA KEV, EPSS, Ransomware.live, FBI IC3) are documented with full citations in the embedded JSON data files and in `docs/technical-reference.md`.
+Additional data sources (Coveware, Census SUSB, Sophos, VCDB, NetDiligence, StatCan, IRIS 2022, Coalition, DShield, CISA KEV, Ransomware.live, FBI IC3) are documented with full citations in the embedded JSON data files and in `docs/technical-reference.md`.
 
 Users must comply with the respective licenses and terms of use for all data sources.
 

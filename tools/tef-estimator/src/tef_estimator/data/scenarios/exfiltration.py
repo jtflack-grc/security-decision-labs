@@ -3,20 +3,17 @@ from __future__ import annotations
 from tef_estimator.data.common import (
     PERTRange,
     RevenueBand,
-    REVENUE_BAND_DATA,
     Sector,
     SECTOR_DATA,
 )
-from tef_estimator.data.loader import load_scenario, pert_from_list
+from tef_estimator.data.loader import load_scenario, normalized_proportions, pert_from_list
 
 
 def _load_exfiltration_data() -> dict:
     scenario = load_scenario("exfiltration")
 
     vector_proportions = {
-        k: PERTRange(*pert_from_list(v))
-        for k, v in scenario["vector_proportions"].items()
-        if not k.startswith("_")
+        k: PERTRange(*t) for k, t in normalized_proportions(scenario["vector_proportions"]).items()
     }
 
     base_rate = {
@@ -74,6 +71,7 @@ def _load_exfiltration_data() -> dict:
         "credential_tempo": credential_tempo,
         "exploitation_scanning": exploitation_scanning,
         "output_templates": output_templates,
+        "base_rate_lef": scenario["base_rate_lef"],
     }
 
 
@@ -127,6 +125,11 @@ class ExfiltrationScenario:
         return _DATA["credential_tempo"]
 
     @property
+    def base_rate_lef(self) -> dict:
+        """US events, under-reporting and firms per revenue tier (base_rate.py)."""
+        return _DATA["base_rate_lef"]
+
+    @property
     def exploitation_scanning(self) -> dict[str, PERTRange | float]:
         return _DATA["exploitation_scanning"]
 
@@ -146,10 +149,9 @@ class ExfiltrationScenario:
         return PERTRange(low=max(0.1, m * 0.7), mode=m, high=m * 1.3)
 
     def adjusted_revenue_multiplier(self, band: RevenueBand) -> float:
-        common_mult = REVENUE_BAND_DATA[band].all_incident_multiplier
-        share = self.revenue_shares.get(band, self.overall_share)
-        return common_mult * (share / self.overall_share)
+        # The base rate is set per revenue tier (base_rate_lef), so revenue is
+        # already in it; a multiplier on top would count it twice.
+        return 1.0
 
     def adjusted_revenue_multiplier_range(self, band: RevenueBand) -> PERTRange:
-        m = self.adjusted_revenue_multiplier(band)
-        return PERTRange(low=max(0.05, m * 0.7), mode=m, high=m * 1.3)
+        return PERTRange(1.0, 1.0, 1.0)

@@ -3,39 +3,21 @@
     "scenario": "ransomware",
     "description": "Ransomware scenario-specific derived parameters",
     "extracted_date": "2026-05-24",
+    "cadence_months": 12,
     "extracted_by": "Laura Voicu"
   },
   "base_rate_triangulation": {
-    "_citation": "Three-anchor consensus: operational tempo (Recorded Future/ransomware.live), IRIS back-calculation, Coalition market-adjusted. All anchors converted from observed LEF to TEF via population-level susceptibility prior.",
-    "susceptibility_prior": [0.10, 0.20, 0.30],
-    "_susceptibility_prior_note": "10-30% population-level. Represents average organization with average controls. Not an org-specific assessment — org-specific adjustment happens through sector/revenue/tech multipliers in the vector engines. Empirical anchors: Mandiant M-Trends ~30% of intrusions lead to ransomware deployment (susceptibility|intrusion), CrowdStrike breakout data implies 20-40% initial access success × 30% deployment = 6-12% end-to-end. Range 10-30% brackets available evidence and matches BEC methodology. All anchor TEF values below were derived using this prior; the engine rescales if the prior changes.",
-    "operational_tempo": [
-      0.011,
-      0.025,
-      0.067
+    "_citation": "One population (US organizations), one role per source: leak sites set the base rate, IRIS the floor. TEF = LEF ÷ susceptibility.",
+    "susceptibility_prior": [
+      0.1,
+      0.17,
+      0.3
     ],
-    "operational_tempo_note": "Ransomware.live: ~4,000 leak-site listings/year. Underreporting 5-10x (not all groups have leak sites, not all victims posted, many pay before listing) → 20,000-40,000 actual loss events/year. Against ~6M US addressable businesses (Census Bureau) → 0.33-0.67% LEF. Divide by susceptibility 10-30% → TEF 1.1-6.7%. Mode at geometric mean ≈ 2.5%.",
-    "iris_back_calculation": [
-      0.005,
-      0.015,
-      0.08
-    ],
-    "iris_back_calculation_note": "IRIS 2025 overall LEF = 0.465%. Ransomware share (IRIS Table 1) = 31.7% → ransomware LEF ≈ 0.147%. Divide by susceptibility 10-30% → TEF 0.49-1.47%. High value (8%) reflects very low susceptibility (~2%) for small firms where IRIS undercounts. Already expressed as TEF.",
-    "coalition_market_adjusted": [
-      0.03,
-      0.06,
-      0.15
-    ],
-    "coalition_market_adjusted_note": "Coalition 2025: global ransomware claims frequency 0.31% (Risk & Insurance). Revenue-band variation: 0.25-0.40% (lower bands to mid-market). Bias correction 3.70x (NAIC: 4.4M policies vs Coalition book, selection for better-controlled clients) → 0.93-1.48% market-adjusted LEF. Divide by susceptibility 10-30% → TEF 3.1-14.8%. Mode: 1.15% LEF / 0.20 susceptibility ≈ 6%.",
-    "consensus": [
-      0.01,
-      0.03,
-      0.10
-    ],
-    "consensus_note": "Conservative synthesis of three corrected anchors. Anchor modes: operational tempo 2.5%, IRIS back-calc 1.5%, Coalition 6.0%. Mean of modes = 3.3%. Consensus mode 3% reflects conservative weighting (IRIS pulls down). Low (1%) anchored by IRIS back-calc floor. High (10%) anchored by Coalition upper range."
+    "_susceptibility_prior_note": "P(initial access | attempt) 0.20 / 0.30 / 0.40 (judgment) × P(loss event | access) 0.50 / 0.57 / 0.76: Sophos State of Ransomware, share of attacks where data was encrypted, global 2022–2025 editions 76 / 70 / 50 / 56%, US 2025 57%. Product 0.10 / 0.17 / 0.30."
   },
   "credential_tempo": {
     "_citation": "Derived from Recorded Future + IR report credential attack campaign patterns",
+    "_derivation": "300-500 publicly claimed ransomware victims per month × 2-4 under-counting = 1,000-3,000 campaigns/month (each campaign targets one organization); 50-55% credential-based; 5-15M organizations with exposed remote access (Shodan census). Ransomware.live shows ~740 claimed victims/month by attack date (Aug 2025-Jul 2026), which with 4× lands at the same high end.",
     "global_campaigns_per_month": [
       1000,
       2000,
@@ -53,7 +35,7 @@
     ]
   },
   "exploitation_scanning": {
-    "_citation": "GreyNoise 2025 Mass Exploitation Report + 2026 State of the Edge Report. IP-level malicious rate derived from cross-report comparison (13.5M tagged IPs in 2024 vs 3.8M malicious in H2 2025). Session-level malicious rate: 3.7% (18.3M/500M daily). Suspicious rate not published \u2014 would require API stats endpoint.",
+    "_citation": "GreyNoise 2025 Mass Exploitation Report + 2026 State of the Edge Report. IP-level malicious rate derived from cross-report comparison (13.5M tagged IPs in 2024 vs 3.8M malicious in H2 2025). Session-level malicious rate: 3.7% (18.3M/500M daily). Suspicious rate not published — would require API stats endpoint.",
     "status": "derived_from_reports",
     "grn_malicious_rate": [
       0.2,
@@ -83,6 +65,55 @@
   "output_templates": {
     "scenario_label": "Ransomware",
     "attempt_verb": "attempt to attack",
-    "one_sentence": "Based on industry data, ransomware operators {attempt_verb} organizations matching your profile roughly once every {recurrence_years:.0f} years (range: {low_yr:.0f}-{high_yr:.0f} years). This measures how often adversaries TRY -- not how often they succeed. Success probability depends on your controls (assessed separately)."
+    "one_sentence": "Based on industry data, ransomware operators {attempt_verb} organizations matching your profile {recurrence} (range: {low} to {high})."
+  },
+  "base_rate_lef": {
+    "_method": "Leak-site recipe (the original operational-tempo method), on US organizations: US victims per year × under-reporting ÷ US firms in the revenue tier × the tier's share of victims.",
+    "geography": "us",
+    "n_us": 3971,
+    "_n_us_note": "ransomware.live victims by attack date, Aug 2025–Jul 2026 (12 complete months, the 2 latest left out for posting lag): 3,762 US among 8,405 with a country, unknown-country victims allocated pro rata. Recorded Future 2025: 3,784 US victims (cross-check). Live mode replaces n_us with the collected count.",
+    "underreporting": [
+      1.33,
+      1.46,
+      1.75
+    ],
+    "_underreporting_note": "Share of events that reach a leak site = (1 − pay rate) × (1 − share by actors without leak sites); multiplier = 1 ÷ that share. Coveware Q4 2024–Q4 2025: pay rate 25 / ~30 / 26 / 23 / 20% (mean 24.8%), Lone Wolf actors 8 / 9 / 9 / 6 / 12% of cases (mean 8.8%). Low 1/((1−0.20)(1−0.06)), mode 1/((1−0.248)(1−0.088)), high 1/((1−0.35)(1−0.12)).",
+    "tiers": {
+      "under_10m": {
+        "bands": [
+          "under_10m"
+        ],
+        "us_firms": 6077095,
+        "victim_share": 0.238
+      },
+      "10m_100m": {
+        "bands": [
+          "10m_100m"
+        ],
+        "us_firms": 283144,
+        "victim_share": 0.313
+      },
+      "100m_plus": {
+        "bands": [
+          "100m_1b",
+          "1b_10b",
+          "10b_100b",
+          "over_100b"
+        ],
+        "us_firms": 31035,
+        "victim_share": 0.257
+      }
+    },
+    "_tier_note": "US firms: Census SUSB 2022 detailed employment sizes (release 4/10/2025), each size band assigned to the revenue tier of its average receipts per firm: 1–39 employees < $10M, 40–299 $10M–100M, 300–2,499 $100M–1B. Victim shares: Coveware victim sizes (mean of Q4 2024 and Q4 2025; 1–10 employees 4% from Q2 2025; 10,000+ as the remainder: 4.0 / 33.8 / 36.3 / 16.6 / 9.3%), split log-uniformly at 40, 300 and 2,500 employees. From $100M up the rate is flat at the measured $100M–1B value (IRIS: 'organizations from $100M to $100B are pretty much all equally likely to be hit by ransomware'). Measured directly, $1B+ came out at about 26%/yr, above IRIS's upper bound, because Coveware's IR caseload over-represents large victims. Where the IRIS floor is higher (largest firms), the floor applies.",
+    "_geography_note": "The base rate counts US events over US firms, so the geography multiplier is relative to the US (US = 1.0)."
+  },
+  "floor_lef": {
+    "_citation": "IRIS Ransomware Spotlight Table 3, lower bound: publicly reported ransomware events ÷ all D&B-registered US organizations in the tier. IRIS has no model under $10M (insufficient data), so that tier has no floor.",
+    "under_10m": 0.0,
+    "10m_100m": 0.0036,
+    "100m_1b": 0.012,
+    "1b_10b": 0.0273,
+    "10b_100b": 0.0455,
+    "over_100b": 0.0937
   }
 }

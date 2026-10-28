@@ -76,9 +76,9 @@ class OrganizationProfile:
                     f"employee_count {self.employee_count:,} exceeds 10M — verify input"
                 )
         if self.custom_base_rate is not None:
-            if self.custom_base_rate <= 0 or self.custom_base_rate > 1.0:
+            if self.custom_base_rate <= 0:
                 raise ValueError(
-                    f"custom_base_rate must be between 0 and 1 (annual probability), "
+                    f"custom_base_rate must be positive (TEF, events per year), "
                     f"got {self.custom_base_rate}"
                 )
 

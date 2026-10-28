@@ -18,7 +18,7 @@ from tef_estimator.data.common import (
     Sector,
     SECTOR_DATA,
 )
-from tef_estimator.data.loader import load_scenario, pert_from_list
+from tef_estimator.data.loader import load_scenario, normalized_proportions, pert_from_list
 
 
 def _load_bec_data() -> dict:
@@ -26,9 +26,7 @@ def _load_bec_data() -> dict:
     scenario = load_scenario("bec")
 
     vector_proportions = {
-        k: PERTRange(*pert_from_list(v))
-        for k, v in scenario["vector_proportions"].items()
-        if not k.startswith("_")
+        k: PERTRange(*t) for k, t in normalized_proportions(scenario["vector_proportions"]).items()
     }
 
     base_rate = {
@@ -84,8 +82,11 @@ def _load_bec_data() -> dict:
         "revenue_shares": revenue_shares,
         "revenue_prob_gte2": revenue_prob_gte2,
         "credential_tempo": credential_tempo,
+        "credential_tempo_geography": cred_tempo_raw.get("geography"),
         "exploitation_scanning": exploitation_scanning,
         "output_templates": output_templates,
+        "base_rate_lef": scenario["base_rate_lef"],
+        "floor_lef": scenario["floor_lef"],
     }
 
 
@@ -138,6 +139,21 @@ class BECScenario:
     @property
     def credential_tempo(self) -> dict[str, PERTRange]:
         return _DATA["credential_tempo"]
+
+    @property
+    def credential_tempo_geography(self) -> str | None:
+        """Where the campaign counts come from ("us"); None means worldwide."""
+        return _DATA["credential_tempo_geography"]
+
+    @property
+    def base_rate_lef(self) -> dict:
+        """US events, under-reporting and firms per revenue tier (base_rate.py)."""
+        return _DATA["base_rate_lef"]
+
+    @property
+    def floor_lef(self) -> dict:
+        """Observed LEF lower bound per revenue band (base_rate.py)."""
+        return _DATA["floor_lef"]
 
     @property
     def exploitation_scanning(self) -> dict[str, PERTRange | float]:

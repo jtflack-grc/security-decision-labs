@@ -19,7 +19,7 @@ from tef_estimator.data.common import (
     Sector,
     SECTOR_DATA,
 )
-from tef_estimator.data.loader import pert_from_list
+from tef_estimator.data.loader import normalized_proportions, pert_from_list
 
 
 _DEFAULT_CREDENTIAL_TEMPO = {
@@ -29,7 +29,7 @@ _DEFAULT_CREDENTIAL_TEMPO = {
 }
 
 _DEFAULT_EXPLOITATION_SCANNING: dict[str, PERTRange | float] = {
-    "grn_malicious_rate": PERTRange(0.10, 0.20, 0.30),
+    "grn_malicious_rate": PERTRange(0.20, 0.28, 0.35),  # shared by all scenarios
     "grn_session_malicious_rate": 0.037,
     "campaign_ip_ratio_lognormal_mu": 4.0,
     "campaign_ip_ratio_lognormal_sigma": 1.5,
@@ -42,9 +42,7 @@ _DEFAULT_OUTPUT_TEMPLATES = {
     "attempt_verb": "attempt to attack",
     "one_sentence": (
         "Based on industry data, threat actors {attempt_verb} organizations "
-        "matching your profile roughly once every {recurrence_years:.0f} years "
-        "(range: {low_yr:.0f}-{high_yr:.0f} years). This measures how often "
-        "adversaries TRY -- not how often they succeed."
+        "matching your profile {recurrence} (range: {low} to {high})."
     ),
 }
 
@@ -136,11 +134,8 @@ class CustomScenario:
 
     @property
     def vector_proportions(self) -> dict[str, PERTRange]:
-        return {
-            k: PERTRange(*pert_from_list(v))
-            for k, v in self._data["vector_proportions"].items()
-            if not k.startswith("_")
-        }
+        return {k: PERTRange(*t)
+                for k, t in normalized_proportions(self._data["vector_proportions"]).items()}
 
     @property
     def base_rate_triangulation(self) -> dict[str, PERTRange]:
@@ -241,8 +236,8 @@ def generate_template(path: Path | str) -> None:
         "_instructions": (
             "Fill in the fields below to define a custom threat scenario. "
             "Vector proportions should sum to ~1.0. Base rate consensus is "
-            "the estimated annual probability that an organization in the "
-            "addressable population experiences an attempt. See the user guide "
+            "the estimated number of attempts (threat events) per organization "
+            "per year in the addressable population. See the user guide "
             "for detailed field descriptions."
         ),
         "scenario_name": "My Custom Scenario",
@@ -255,7 +250,7 @@ def generate_template(path: Path | str) -> None:
             "supply_chain": [0.05, 0.15, 0.20],
         },
         "base_rate": {
-            "_note": "Annual probability of attempt against addressable population",
+            "_note": "Threat events (attempts) per organization per year, addressable population",
             "consensus": [0.005, 0.015, 0.04],
         },
         "overall_share": 0.10,

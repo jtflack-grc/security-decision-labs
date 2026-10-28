@@ -19,6 +19,8 @@ from tef_estimator.distributions import DispersionParams
 _BUNDLED_CONFIG = Path(__file__).parent / "config.yaml"
 _USER_CONFIG = Path.home() / ".tef-estimator" / "config.yaml"
 
+TELEMETRY_INPUT_MODES = ("frozen", "live")
+
 _bundled_defaults: dict | None = None
 
 
@@ -28,6 +30,11 @@ def _get_bundled_defaults() -> dict:
         with open(_BUNDLED_CONFIG) as f:
             _bundled_defaults = yaml.safe_load(f)
     return _bundled_defaults
+
+
+def get_bundled_susceptibility_prior() -> dict:
+    """The bundled config's susceptibility prior, to tell a user override from the default."""
+    return dict(_get_bundled_defaults()["susceptibility_prior"])
 
 
 @dataclass
@@ -111,6 +118,27 @@ class TEFConfig:
     dispersion: dict = field(
         default_factory=lambda: copy.deepcopy(_get_bundled_defaults().get("dispersion", {}))
     )
+    # "frozen": bundled reference values only; "live": inputs derived from the
+    # telemetry DB where a derivation exists (see telemetry/derive.py)
+    telemetry_inputs: str = field(
+        default_factory=lambda: _get_bundled_defaults().get("telemetry_inputs", "frozen")
+    )
+    telemetry_collectors: dict = field(
+        default_factory=lambda: copy.deepcopy(_get_bundled_defaults().get("telemetry_collectors", {}))
+    )
+    exploitation_ceiling_derivation: dict = field(
+        default_factory=lambda: copy.deepcopy(
+            _get_bundled_defaults().get("exploitation_ceiling_derivation", {}))
+    )
+    tempo_anchor: dict = field(
+        default_factory=lambda: copy.deepcopy(_get_bundled_defaults().get("tempo_anchor", {}))
+    )
+    # Base-rate consensus per scenario slug, [low, mode, high], set only by
+    # live mode (telemetry/derive.py); empty means the scenario's own consensus
+    live_base_rate: dict = field(default_factory=dict)
+    # Plain-language lines on where the inputs came from, set by live mode;
+    # empty means frozen (bundled reference data)
+    input_provenance: list = field(default_factory=list)
 
     def dispersion_for(self, kind: str, name: str) -> DispersionParams:
         """Dispersion for a vector (kind="vectors") or scenario total (kind="scenarios").
@@ -168,6 +196,24 @@ class TEFConfig:
         for kind in ("vectors", "scenarios"):  # validate every configured entry up front
             for name in (cfg.dispersion.get(kind) or {}):
                 cfg.dispersion_for(kind, name)
+        cfg.tempo_anchor = _deep_merge(copy.deepcopy(defaults.get("tempo_anchor", {})),
+                                       d.get("tempo_anchor", {}) or {})
+        cfg.live_base_rate = copy.deepcopy(d.get("live_base_rate", {}) or {})
+        cfg.input_provenance = list(d.get("input_provenance", []) or [])
+        cfg.exploitation_ceiling_derivation = _deep_merge(
+            copy.deepcopy(defaults.get("exploitation_ceiling_derivation", {})),
+            d.get("exploitation_ceiling_derivation", {}) or {},
+        )
+        cfg.telemetry_collectors = _deep_merge(
+            copy.deepcopy(defaults.get("telemetry_collectors", {})),
+            d.get("telemetry_collectors", {}) or {},
+        )
+        cfg.telemetry_inputs = d.get("telemetry_inputs", defaults.get("telemetry_inputs", "frozen"))
+        if cfg.telemetry_inputs not in TELEMETRY_INPUT_MODES:
+            raise ValueError(
+                f"telemetry_inputs must be one of {TELEMETRY_INPUT_MODES}, "
+                f"got {cfg.telemetry_inputs!r}"
+            )
         return cfg
 
     def to_dict(self) -> dict:
@@ -203,6 +249,12 @@ class TEFConfig:
             "revenue_per_employee": dict(self.revenue_per_employee),
             "k_sensitivity": copy.deepcopy(self.k_sensitivity),
             "dispersion": copy.deepcopy(self.dispersion),
+            "telemetry_inputs": self.telemetry_inputs,
+            "telemetry_collectors": copy.deepcopy(self.telemetry_collectors),
+            "exploitation_ceiling_derivation": copy.deepcopy(self.exploitation_ceiling_derivation),
+            "tempo_anchor": copy.deepcopy(self.tempo_anchor),
+            "live_base_rate": copy.deepcopy(self.live_base_rate),
+            "input_provenance": list(self.input_provenance),
         }
 
 

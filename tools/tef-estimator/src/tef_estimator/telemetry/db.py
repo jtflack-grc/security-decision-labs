@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -65,7 +64,6 @@ CREATE TABLE IF NOT EXISTS source_health (
 KNOWN_SOURCES = [
     ("dshield", "SANS ISC DShield"),
     ("cisa_kev", "CISA Known Exploited Vulnerabilities"),
-    ("greynoise", "GreyNoise Community"),
     ("ransomware_live", "Ransomware.live"),
     ("annual_report_monitor", "Annual report edition monitor"),
     ("iris", "Cyentia IRIS reference data"),
@@ -100,6 +98,12 @@ class TelemetryDB:
             self._memory_uri = f"file:tef_mem_{_memory_db_counter}?mode=memory&cache=shared"
         else:
             self._snapshots_dir = db_path.parent / "snapshots"
+
+    def cache_dir(self, name: str) -> Path | None:
+        """A collector's download cache next to the DB; None for in-memory DBs."""
+        if self._snapshots_dir is None:
+            return None
+        return self._snapshots_dir.parent / "cache" / name
 
     def initialize(self) -> None:
         """Create tables if they don't exist. Safe to call repeatedly."""
@@ -170,6 +174,43 @@ class TelemetryDB:
                       source_id, metric_name, observation_date, e)
             return False
 
+    def upsert_observation(
+        self,
+        cursor: sqlite3.Cursor,
+        source_id: str,
+        event_type: str,
+        observation_date: str,
+        metric_name: str,
+        metric_value: float,
+        unit: str,
+        collection_ts: str,
+        payload_hash: str,
+    ) -> bool:
+        """Insert, or replace the value when it changed; True if a row was written.
+
+        For counts that keep growing after the date (late reporting, a partial
+        current day), where the latest collection must win.
+        """
+        try:
+            cursor.execute(
+                """INSERT INTO raw_observations
+                (source_id, observation_date, event_type, metric_name,
+                 metric_value, unit, collection_timestamp, raw_payload_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, observation_date, metric_name) DO UPDATE SET
+                    metric_value = excluded.metric_value,
+                    collection_timestamp = excluded.collection_timestamp,
+                    raw_payload_hash = excluded.raw_payload_hash
+                WHERE raw_observations.metric_value != excluded.metric_value""",
+                (source_id, observation_date, event_type, metric_name,
+                 metric_value, unit, collection_ts, payload_hash),
+            )
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            log.error("Upsert error for %s/%s on %s: %s",
+                      source_id, metric_name, observation_date, e)
+            return False
+
     def update_source_health(
         self,
         conn: sqlite3.Connection,
@@ -207,7 +248,9 @@ class TelemetryDB:
         cursor.execute(
             """SELECT source_id, last_success, last_attempt,
                       consecutive_failures, staleness_flag, notes
-               FROM source_health ORDER BY source_id"""
+               FROM source_health WHERE source_id IN ({})
+               ORDER BY source_id""".format(",".join("?" * len(KNOWN_SOURCES))),
+            [source_id for source_id, _ in KNOWN_SOURCES],
         )
         return [
             SourceHealth(

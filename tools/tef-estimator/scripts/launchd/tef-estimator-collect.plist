@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily telemetry collection for tef-estimator on macOS (launchd).
+
+  1. Replace TEF_ESTIMATOR_PATH with the output of `which tef-estimator`.
+  2. cp scripts/launchd/tef-estimator-collect.plist ~/Library/LaunchAgents/
+  3. launchctl load ~/Library/LaunchAgents/tef-estimator-collect.plist
+  Remove: launchctl unload ~/Library/LaunchAgents/tef-estimator-collect.plist
+
+  Runs every day at 07:30 local time; if the Mac was asleep, launchd runs it at
+  the next wake. `collect` only fetches sources that are due and integrates
+  what it fetched. Output goes to /tmp/tef-estimator-collect.log (launchd does
+  not expand ~; use an absolute path to log elsewhere).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>tef-estimator-collect</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>TEF_ESTIMATOR_PATH</string>
+        <string>telemetry</string>
+        <string>collect</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/tef-estimator-collect.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/tef-estimator-collect.log</string>
+</dict>
+</plist>

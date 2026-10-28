@@ -38,6 +38,7 @@ from tef_estimator.data.scenarios.bec import BECScenario
 from tef_estimator.data.scenarios.exfiltration import ExfiltrationScenario
 from tef_estimator.data.scenarios.web_app import WebAppScenario
 from tef_estimator.data.scenarios.ransomware import RansomwareScenario
+from tef_estimator.config import get_config
 from tef_estimator.engine import TEFEngine
 from tef_estimator.profile import OrganizationProfile
 
@@ -142,6 +143,50 @@ def _load_telemetry(path: Path):
     return OrgTelemetry(observations=observations)
 
 
+def _live_option():
+    return typer.Option(
+        None, "--live/--frozen",
+        help="Derive inputs from the telemetry DB (--live) or use bundled values only "
+             "(--frozen). Default: config telemetry_inputs (frozen)",
+    )
+
+
+def _telemetry_db_option():
+    return typer.Option(
+        None, "--telemetry-db", help="Telemetry database for --live (default ~/.tef-estimator/telemetry.db)"
+    )
+
+
+def _engine_config(live: bool | None, telemetry_db: Path | None):
+    """The engine config for the input mode: None (bundled) when frozen, else
+    the live-derived config, with each live input's outcome on stderr."""
+    from tef_estimator.telemetry.derive import use_live
+    if not use_live(get_config(), live):
+        return None
+    from tef_estimator.telemetry.db import DEFAULT_DB_PATH, TelemetryDB
+    from tef_estimator.telemetry.derive import live_config
+    db_file = telemetry_db or DEFAULT_DB_PATH
+    if not db_file.exists():
+        typer.echo(f"Telemetry database not found: {db_file}", err=True)
+        raise typer.Exit(1)
+    config, fits = live_config(TelemetryDB(db_path=db_file))
+    for f in fits:
+        what = (f"Live {f.name} base rate" if f.kind == "base_rate"
+                else f"Live dispersion {f.kind}/{f.name}")
+        if f.status != "fitted":
+            typer.echo(f"{what}: bundled kept ({f.reason})", err=True)
+        elif f.kind == "base_rate":
+            typer.echo(f"{what}: {f.detail}", err=True)
+        else:
+            typer.echo(
+                f"{what}: r={f.shape_r} "
+                f"(bundled {f.bundled_shape_r}), {f.window[0]}..{f.window[1]}, "
+                f"data through {f.last_collected}",
+                err=True,
+            )
+    return config
+
+
 @app.command()
 def estimate(
     sector: Sector = typer.Option(..., help="Industry sector"),
@@ -155,7 +200,7 @@ def estimate(
     supply_chain: bool = typer.Option(False, help="Significant supply chain role?"),
     recent_ma: bool = typer.Option(False, help="M&A in last 18 months?"),
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
-    base_rate: float = typer.Option(None, help="Override base rate (annual probability)"),
+    base_rate: float = typer.Option(None, help="Override base rate (TEF, events per year)"),
     brief: bool = typer.Option(False, "--brief", help="Tier 1 summary only"),
     full: bool = typer.Option(False, "--full", help="Tier 3 full audit trail"),
     scenario: ScenarioChoice = typer.Option(
@@ -170,6 +215,8 @@ def estimate(
     output: Path = typer.Option(
         None, "--output", "-o", help="Write markdown report to file"
     ),
+    live: bool = _live_option(),
+    telemetry_db: Path = _telemetry_db_option(),
 ):
     """Estimate TEF for an organization profile."""
     profile = _build_profile(
@@ -179,7 +226,7 @@ def estimate(
     )
 
     scenario_obj = _resolve_scenario(scenario, scenario_file)
-    engine = TEFEngine(scenario=scenario_obj)
+    engine = TEFEngine(scenario=scenario_obj, config=_engine_config(live, telemetry_db))
     result = engine.estimate(profile)
 
     _apply_peer_grid(result, profile.revenue_band, scenario_obj.scenario_slug)
@@ -225,6 +272,8 @@ def explain(
     output: Path = typer.Option(
         None, "--output", "-o", help="Write markdown report to file"
     ),
+    live: bool = _live_option(),
+    telemetry_db: Path = _telemetry_db_option(),
 ):
     """Print the full calculation trace for every vector."""
     profile = _build_profile(
@@ -233,7 +282,7 @@ def explain(
     )
 
     scenario_obj = _resolve_scenario(scenario, scenario_file)
-    engine = TEFEngine(scenario=scenario_obj)
+    engine = TEFEngine(scenario=scenario_obj, config=_engine_config(live, telemetry_db))
     result = engine.estimate(profile)
 
     if output is not None:
@@ -268,6 +317,8 @@ def compare(
     scenario_file: Path = typer.Option(
         None, "--scenario-file", help="JSON file for custom scenario"
     ),
+    live: bool = _live_option(),
+    telemetry_db: Path = _telemetry_db_option(),
 ):
     """Compare TEF estimates for two profiles."""
     profile_a = _build_profile(sector, revenue, geo, remote_access, employees)
@@ -280,7 +331,7 @@ def compare(
     )
 
     scenario_obj = _resolve_scenario(scenario, scenario_file)
-    engine = TEFEngine(scenario=scenario_obj)
+    engine = TEFEngine(scenario=scenario_obj, config=_engine_config(live, telemetry_db))
     diff = engine.compare(profile_a, profile_b)
 
     if output_json:
@@ -305,12 +356,14 @@ def sensitivity(
     scenario_file: Path = typer.Option(
         None, "--scenario-file", help="JSON file for custom scenario"
     ),
+    live: bool = _live_option(),
+    telemetry_db: Path = _telemetry_db_option(),
 ):
     """Rank input parameters by contribution to output variance."""
     profile = _build_profile(sector, revenue, geo, remote_access, employees)
 
     scenario_obj = _resolve_scenario(scenario, scenario_file)
-    engine = TEFEngine(scenario=scenario_obj)
+    engine = TEFEngine(scenario=scenario_obj, config=_engine_config(live, telemetry_db))
     result = engine.sensitivity(profile)
 
     if output_json:
@@ -377,27 +430,27 @@ def show_base_rate(
         ScenarioChoice.RANSOMWARE, help="Threat scenario"
     ),
 ):
-    """Show the three-anchor base rate triangulation."""
+    """Show the scenario's base rate: per revenue band, with its derivation."""
     scenario_obj = SCENARIO_MAP[scenario]()
-
+    engine = TEFEngine(scenario=scenario_obj)
+    rows = []
+    for band in RevenueBand:
+        br = engine.base_rate_for(band)
+        rows.append((band.value, br))
     if HAS_RICH:
-        table = Table(title="Base Rate Triangulation")
-        table.add_column("Anchor", style="bold")
+        table = Table(title=f"Base rate (TEF, events per year), {scenario_obj.scenario_name}")
+        table.add_column("Revenue band", style="bold")
         table.add_column("Low", justify="right")
         table.add_column("Mode", justify="right", style="cyan")
         table.add_column("High", justify="right")
-
-        for name, pert in scenario_obj.base_rate_triangulation.items():
-            table.add_row(
-                name.replace("_", " ").title(),
-                f"{pert.low:.4f} ({pert.low * 100:.2f}%)",
-                f"{pert.mode:.4f} ({pert.mode * 100:.2f}%)",
-                f"{pert.high:.4f} ({pert.high * 100:.2f}%)",
-            )
+        for band, br in rows:
+            table.add_row(band, f"{br.low:.3g}", f"{br.mode:.3g}", f"{br.high:.3g}")
         console.print(table)
     else:
-        for name, pert in scenario_obj.base_rate_triangulation.items():
-            print(f"{name}: low={pert.low}, mode={pert.mode}, high={pert.high}")
+        for band, br in rows:
+            print(f"{band}: low={br.low:.4f}, mode={br.mode:.4f}, high={br.high:.4f}")
+    for line in engine.base_rate_derivation(RevenueBand.R_100M_1B, engine.base_rate_for(RevenueBand.R_100M_1B)):
+        print(f"$100M–1B: {line}")
 
 
 @data_app.command("vectors")
@@ -433,18 +486,20 @@ def show_vectors(
 def show_peer_grid(
     rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild the peer grid"),
 ):
-    """Show or rebuild the peer percentile grid."""
+    """Show the ransomware peer grid, or rebuild the grids of all built-in scenarios."""
     from tef_estimator.peer import build_grid, save_grid, load_grid
 
     if rebuild:
-        engine = TEFEngine()
-        print("Building peer grid (all sector x revenue x geo combos)...")
-        grid = build_grid(engine)
-        save_grid(grid, PEER_GRID_PATH)
-        print(f"Saved to {PEER_GRID_PATH}")
-        for band, values in grid.items():
-            print(f"  {band}: {len(values)} estimates, "
-                  f"range {min(values):.5f} - {max(values):.5f}")
+        from tef_estimator.data.scenarios import SCENARIO_CLASSES
+        for slug, cls in SCENARIO_CLASSES.items():
+            path = PEER_GRID_DIR / f"{slug}.json"
+            print(f"Building {slug} peer grid (all sector x revenue x geo combos)...")
+            grid = build_grid(TEFEngine(scenario=cls()))
+            save_grid(grid, path)
+            print(f"Saved to {path}")
+            for band, values in grid.items():
+                print(f"  {band}: {len(values)} estimates, "
+                      f"range {min(values):.5f} - {max(values):.5f}")
     else:
         grid = load_grid(PEER_GRID_PATH)
         if grid is None:
@@ -459,7 +514,7 @@ def show_peer_grid(
 
 @refresh_app.command("snapshot")
 def refresh_snapshot():
-    """Fetch API data (DShield, KEV, EPSS, Ransomware.live)."""
+    """Print the steps to update the bundled reference data (fetches nothing)."""
     from tef_estimator.refresh import run_snapshot_refresh
     run_snapshot_refresh()
 

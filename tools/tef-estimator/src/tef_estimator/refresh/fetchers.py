@@ -15,7 +15,7 @@ def run_snapshot_refresh() -> None:
     print("To update, replace the extracted.json files in:")
     print("  src/tef_estimator/data/reference/<source>/extracted.json")
     print()
-    print("Sources: iris, coalition, at_bay, beazley, common")
+    print("Sources: iris, at_bay, beazley, common")
     print()
     print("Then rebuild the peer grid:")
     print("  tef-estimator data peer-grid --rebuild")

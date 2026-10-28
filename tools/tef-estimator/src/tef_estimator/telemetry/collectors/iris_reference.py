@@ -45,7 +45,7 @@ class IRISReferenceCollector:
         current_hash = db.compute_hash(content)
         last_hash = db.get_last_hash(SOURCE_ID)
 
-        if current_hash == last_hash:
+        if current_hash == last_hash and not kwargs.get("force"):
             log.info("IRIS data unchanged, skipping")
             conn = db.connect()
             db.update_source_health(conn, SOURCE_ID, True, "Data unchanged")

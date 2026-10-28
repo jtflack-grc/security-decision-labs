@@ -9,6 +9,7 @@ Three tabs:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -17,11 +18,16 @@ from nicegui import run, ui
 import plotly.graph_objects as go
 
 from tef_estimator import __version__
-from tef_estimator.config import TEFConfig, SusceptibilityPrior, DampeningParams, CredibilityKParams
+from tef_estimator.config import (
+    CredibilityKParams,
+    DampeningParams,
+    SusceptibilityPrior,
+    TEFConfig,
+    get_config,
+)
 from tef_estimator.data.common import (
     DATA_VINTAGE,
     Geography,
-    PERTRange,
     RemoteAccessType,
     RevenueBand,
     Sector,
@@ -33,6 +39,7 @@ from tef_estimator.data.scenarios.web_app import WebAppScenario
 from tef_estimator.data.scenarios.ransomware import RansomwareScenario
 from tef_estimator.engine import TEFEngine
 from tef_estimator.peer import compute_and_set_percentile, load_grid
+from tef_estimator.result import ordinal, recurrence_text
 from tef_estimator.profile import OrganizationProfile
 
 log = logging.getLogger(__name__)
@@ -40,10 +47,8 @@ log = logging.getLogger(__name__)
 # --- Telemetry availability ---
 try:
     from tef_estimator.telemetry.db import TelemetryDB
-    from tef_estimator.telemetry.collectors import collect_all, get_all_collectors
     from tef_estimator.telemetry.scheduler import run_due_collections
-    from tef_estimator.telemetry.integrator import run_integration
-    from tef_estimator.telemetry.compare import compare, snapshot_baseline, load_baseline
+    from tef_estimator.telemetry.compare import compare, snapshot_baseline
     HAS_TELEMETRY = True
 except ImportError:
     HAS_TELEMETRY = False
@@ -141,9 +146,12 @@ def _run_estimate(state: dict, config_state: dict | None = None) -> dict | None:
             custom_base_rate=br,
         )
 
-        cfg = None
+        # Start from the loaded config (bundled + ~/.tef-estimator/config.yaml)
+        # and override only what the UI controls expose
+        cfg: TEFConfig = get_config()
         if config_state:
-            cfg = TEFConfig(
+            cfg = dataclasses.replace(
+                cfg,
                 susceptibility_prior=SusceptibilityPrior(
                     low=config_state["susc_low"],
                     mode=config_state["susc_mode"],
@@ -162,6 +170,19 @@ def _run_estimate(state: dict, config_state: dict | None = None) -> dict | None:
                 ),
             )
 
+        inputs = {"mode": "frozen", "fits": [], "note": None}
+        if state.get("inputs") == "live":
+            from tef_estimator.telemetry.db import DEFAULT_DB_PATH, TelemetryDB
+            from tef_estimator.telemetry.derive import live_config
+            if DEFAULT_DB_PATH.exists():
+                cfg, fits = live_config(TelemetryDB(db_path=DEFAULT_DB_PATH), base=cfg)
+                inputs = {"mode": "live", "fits": fits, "note": None}
+            else:
+                inputs["note"] = (
+                    f"No telemetry database at {DEFAULT_DB_PATH}: bundled values used. "
+                    "Initialize and collect in the Telemetry tab."
+                )
+
         scenario = _load_scenario_for_engine(state.get("scenario", "ransomware"))
         engine = TEFEngine(scenario=scenario, config=cfg)
         result = engine.estimate(profile)
@@ -177,13 +198,49 @@ def _run_estimate(state: dict, config_state: dict | None = None) -> dict | None:
             "result": result,
             "sensitivity": sens,
             "profile": profile,
+            "inputs": {**inputs, "provenance": result.input_provenance},
             "error": None,
         }
     except Exception as e:
-        return {"result": None, "sensitivity": None, "profile": None, "error": str(e)}
+        return {"result": None, "sensitivity": None, "profile": None, "inputs": None,
+                "error": str(e)}
+
+
+def _inputs_lines(inputs: dict | None) -> list[str]:
+    """Plain-language provenance of the estimate's inputs, one line per item."""
+    if not inputs:
+        return []
+    lines = list(inputs["provenance"])
+    if inputs.get("note"):
+        lines.append(inputs["note"])
+    if inputs["mode"] == "frozen":
+        return lines
+    if any(f.kind == "base_rate" and f.status == "fitted" for f in inputs["fits"]):
+        lines.append("Live inputs move the ransomware base rate through its operational-tempo "
+                     "anchor (one of three anchors) and the dispersion.")
+    else:
+        lines.append("Live inputs change the dispersion; frequency estimates are unchanged.")
+    return lines
 
 
 # --- Chart builders ---
+
+def _tef_tiles(s, number_size: str, label_size: str) -> None:
+    """TEF (events per year) and the chance of at least one attempt, side by side."""
+    with ui.column().classes("items-center"):
+        ui.label(f"{s.positioned_median:.2g}").classes(f"{number_size} font-bold").style(f"color: {ACCENT}")
+        ui.label("TEF, events per year").classes(f"{label_size} text-slate-400")
+    with ui.column().classes("items-center"):
+        ui.label(f"{s.chance_at_least_one:.0%}").classes(f"{number_size} font-bold text-blue-400")
+        ui.label("Chance of at least one attempt in a year").classes(f"{label_size} text-slate-400")
+
+
+def _recurrence_line(s) -> str:
+    """'About once every 3.7 years (range: … to …)'."""
+    text = recurrence_text(s.positioned_median)
+    return (f"{text[0].upper()}{text[1:]} (range: {recurrence_text(s.positioned_low)} "
+            f"to {recurrence_text(s.positioned_high)})")
+
 
 def _vector_bar_figure(result) -> go.Figure:
     s = result.summary
@@ -310,6 +367,7 @@ class TEFEstimatorApp:
             "base_rate_override": None,
             "scenario": "ransomware",
             "compare_mode": False,
+            "inputs": get_config().telemetry_inputs,
         }
         self.state_b = {
             "sector": Sector.FINANCIAL.value,
@@ -333,7 +391,6 @@ class TEFEstimatorApp:
         self.telem_source_select = None
 
         # Config state (loaded from config.yaml, overridable in UI)
-        from tef_estimator.config import get_config
         cfg = get_config()
         self.config_state = {
             "susc_low": cfg.susceptibility_prior.low,
@@ -440,6 +497,20 @@ class TEFEstimatorApp:
                 ui.separator().classes("bg-slate-700 my-3")
 
                 ui.switch(
+                    "Live telemetry inputs",
+                    value=self.state["inputs"] == "live",
+                    on_change=lambda e: self._set_and_update(
+                        self.state, "inputs", "live" if e.value else "frozen"
+                    ),
+                ).props("dense color=red dark").tooltip(
+                    "Off: bundled reference data only (reproducible from the package version). "
+                    "On: inputs with a telemetry derivation are fitted on your collected data, "
+                    "and the estimate shows the data date."
+                )
+
+                ui.separator().classes("bg-slate-700 my-3")
+
+                ui.switch(
                     "Compare Mode",
                     value=self.state["compare_mode"],
                     on_change=lambda e: self._toggle_compare(e.value),
@@ -470,8 +541,8 @@ class TEFEstimatorApp:
                         ),
                     ).props("dense dark")
                     ui.number(
-                        "Base Rate Override", value=None,
-                        min=0.0001, max=1.0, step=0.001,
+                        "Base Rate Override (TEF per year)", value=None,
+                        min=0.0001, step=0.001,
                         on_change=lambda e: self._set_and_update(
                             self.state, "base_rate_override", e.value
                         ),
@@ -617,22 +688,24 @@ class TEFEstimatorApp:
                     ui.label(f"{result.scenario_name} TEF Estimate").classes(
                         "text-xl font-bold text-white"
                     )
-                    if s.peer_percentile is not None:
-                        ui.badge(f"{s.peer_percentile}th percentile", color="blue").classes("text-sm")
+                    with ui.row().classes("items-center gap-2"):
+                        live = (out.get("inputs") or {}).get("mode") == "live"
+                        ui.badge("Live inputs" if live else "Frozen inputs",
+                                 color="red" if live else "grey").classes("text-sm")
+                        if s.peer_percentile is not None:
+                            ui.badge(f"{ordinal(s.peer_percentile)} percentile among peers",
+                                     color="blue").classes("text-sm").tooltip(
+                                f"Your TEF is at or above {s.peer_percentile}% of peer profiles in your "
+                                f"revenue band ({s.peer_context}): every sector and region, run without "
+                                "technology inputs (no VPN vendor or RDP). Exposed remote access ranks you higher.")
+
+                with ui.column().classes("gap-0 mt-1"):
+                    for line in _inputs_lines(out.get("inputs")):
+                        ui.label(line).classes("text-xs text-slate-400")
 
                 with ui.row().classes("w-full gap-8 mt-4"):
-                    with ui.column().classes("items-center"):
-                        ui.label(s.annual_probability_pct).classes(
-                            "text-5xl font-bold"
-                        ).style(f"color: {ACCENT}")
-                        ui.label("Annual Probability").classes("text-sm text-slate-400")
-                    with ui.column().classes("items-center"):
-                        recur_text = (
-                            f"~1 in {s.recurrence_years:.0f}"
-                            if s.recurrence_years < 1e6 else "N/A"
-                        )
-                        ui.label(recur_text).classes("text-5xl font-bold text-blue-400")
-                        ui.label("Year Recurrence").classes("text-sm text-slate-400")
+                    _tef_tiles(s, "text-5xl", "text-sm")
+                ui.label(_recurrence_line(s)).classes("text-sm text-slate-400")
 
                 ui.separator().classes("bg-slate-700")
                 ui.label("Vector Breakdown").classes("text-sm font-semibold text-slate-300 mt-2")
@@ -663,9 +736,9 @@ class TEFEstimatorApp:
                         for label, val in [
                             ("mu (ln-space)", f"{ln.mu:.3f}"),
                             ("sigma (ln-space)", f"{ln.sigma:.3f}"),
-                            ("5th percentile", f"{ln.p5:.5f} ({ln.p5 * 100:.2f}%)"),
-                            ("Median", f"{ln.median:.5f} ({ln.median * 100:.2f}%)"),
-                            ("95th percentile", f"{ln.p95:.5f} ({ln.p95 * 100:.2f}%)"),
+                            ("5th percentile", f"{ln.p5:.5f} per year"),
+                            ("Median", f"{ln.median:.5f} per year"),
+                            ("95th percentile", f"{ln.p95:.5f} per year"),
                         ]:
                             with ui.row().classes("justify-between w-full"):
                                 ui.label(label).classes("text-xs text-slate-500")
@@ -738,13 +811,13 @@ class TEFEstimatorApp:
                                 "text-sm font-mono text-blue-400"
                             )
                         with ui.row().classes("w-full gap-6"):
-                            ui.label(f"Prior: {v.prior_median * 100:.2f}%").classes(
+                            ui.label(f"Prior: {v.prior_median:.3g}/yr").classes(
                                 "text-xs text-slate-400"
                             )
-                            ui.label(f"Observed: {v.observed_frequency * 100:.2f}%").classes(
+                            ui.label(f"Observed: {v.observed_frequency:.3g}/yr").classes(
                                 "text-xs text-slate-400"
                             )
-                            ui.label(f"Blended: {v.positioned_median * 100:.2f}%").classes(
+                            ui.label(f"Blended: {v.positioned_median:.3g}/yr").classes(
                                 "text-xs font-semibold text-white"
                             )
 
@@ -806,25 +879,14 @@ class TEFEstimatorApp:
                             "text-lg font-bold text-white"
                         )
                         with ui.row().classes("w-full gap-8 mt-2"):
-                            with ui.column().classes("items-center"):
-                                ui.label(s_b.annual_probability_pct).classes(
-                                    "text-3xl font-bold"
-                                ).style(f"color: {ACCENT}")
-                                ui.label("Annual Probability").classes("text-xs text-slate-400")
-                            with ui.column().classes("items-center"):
-                                recur_b = (
-                                    f"~1 in {s_b.recurrence_years:.0f}"
-                                    if s_b.recurrence_years < 1e6 else "N/A"
-                                )
-                                ui.label(recur_b).classes("text-3xl font-bold text-blue-400")
-                                ui.label("Year Recurrence").classes("text-xs text-slate-400")
+                            _tef_tiles(s_b, "text-3xl", "text-xs")
+                        ui.label(_recurrence_line(s_b)).classes("text-xs text-slate-400")
 
                         delta = result_b.total_positioned_median - result.total_positioned_median
-                        delta_pct = delta * 100
                         sign = "+" if delta >= 0 else ""
                         color = "text-red-400" if delta > 0 else ("text-green-400" if delta < 0 else "text-slate-400")
                         ui.label(
-                            f"Delta: {sign}{delta_pct:.2f}pp vs Profile A"
+                            f"Delta: {sign}{delta:.3g} per year vs Profile A"
                         ).classes(f"text-sm font-semibold {color} mt-2")
 
                         ui.plotly(_vector_bar_figure(result_b)).classes("w-full h-20 mt-2")
@@ -855,7 +917,7 @@ class TEFEstimatorApp:
                           on_click=self._telem_init).props("flat color=blue dense")
                 self.telem_source_select = ui.select(
                     {"all": "All Sources", "dshield": "DShield", "cisa_kev": "CISA KEV",
-                     "ransomware_live": "Ransomware.live", "greynoise": "GreyNoise",
+                     "ransomware_live": "Ransomware.live",
                      "annual_report_monitor": "Annual Reports",
                      "iris": "IRIS Reference", "vector_benchmarks": "Vector Benchmarks"},
                     value="all", label="Source",
@@ -936,7 +998,11 @@ class TEFEstimatorApp:
             ui.notify("Initialize the database first", type="warning")
             return
         ui.notify("Force collecting all sources...", type="info")
-        results = await run.io_bound(lambda: collect_all(db))
+        source = self.telem_source_select.value if self.telem_source_select else "all"
+        source_filter = None if source == "all" else source
+        results = await run.io_bound(
+            lambda: run_due_collections(db, force=True, source_filter=source_filter)
+        )
         total = sum(r.get("records_inserted", 0) for r in results)
         ui.notify(f"Done: {total} records inserted", type="positive")
         self._refresh_health()
@@ -1107,14 +1173,14 @@ class TEFEstimatorApp:
 
                 # Base rate
                 with ui.card().classes("w-full bg-slate-800 border-slate-700"):
-                    ui.label("Base Rate (annual probability)").classes(
+                    ui.label("Base Rate (TEF, events per year)").classes(
                         "text-sm font-semibold text-slate-300 mb-2"
                     )
                     with ui.row().classes("w-full gap-4"):
                         for key, label in [("low", "Low"), ("mode", "Mode"), ("high", "High")]:
                             ui.number(
                                 label, value=self.scen_state["base_rate"][key],
-                                min=0.0001, max=1.0, step=0.001, format="%.4f",
+                                min=0.0001, step=0.001, format="%.4f",
                                 on_change=lambda e, k=key: self._scen_set_nested(
                                     "base_rate", k, e.value
                                 ),
@@ -1249,18 +1315,8 @@ class TEFEstimatorApp:
                 ui.label(f"{scenario.scenario_name}").classes("text-lg font-bold text-white")
 
                 with ui.row().classes("w-full gap-6 mt-2"):
-                    with ui.column().classes("items-center"):
-                        ui.label(s.annual_probability_pct).classes(
-                            "text-4xl font-bold"
-                        ).style(f"color: {ACCENT}")
-                        ui.label("Annual Probability").classes("text-xs text-slate-400")
-                    with ui.column().classes("items-center"):
-                        recur = (
-                            f"~1 in {s.recurrence_years:.0f}"
-                            if s.recurrence_years < 1e6 else "N/A"
-                        )
-                        ui.label(recur).classes("text-4xl font-bold text-blue-400")
-                        ui.label("Year Recurrence").classes("text-xs text-slate-400")
+                    _tef_tiles(s, "text-4xl", "text-xs")
+                ui.label(_recurrence_line(s)).classes("text-xs text-slate-400")
 
                 ui.plotly(_vector_bar_figure(result)).classes("w-full h-16 mt-2")
 

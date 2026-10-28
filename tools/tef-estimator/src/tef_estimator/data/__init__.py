@@ -7,7 +7,6 @@ data.scenarios directly.
 """
 
 from tef_estimator.data.common import (
-    COALITION_BIAS_CORRECTION,
     DATA_VINTAGE,
     DampeningConfig,
     FLOOR_ANCHORS,
@@ -54,7 +53,6 @@ __all__ = [
     "TECH_MULTIPLIERS",
     "GEO_MULTIPLIERS",
     "PROFILE_MULTIPLIERS",
-    "COALITION_BIAS_CORRECTION",
     # Ransomware-specific (backward compat)
     "VECTOR_PROPORTIONS",
     "BASE_RATE_TRIANGULATION",

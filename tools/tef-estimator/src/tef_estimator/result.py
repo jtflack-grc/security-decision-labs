@@ -12,6 +12,8 @@ Three-tier output structure:
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -22,13 +24,32 @@ from tef_estimator.distributions import DispersionParams, LognormalParams, sampl
 from tef_estimator.vectors.base import VectorEstimate
 
 
+def recurrence_text(rate: float) -> str:
+    """A rate in events per year, as plain words."""
+    if rate <= 0:
+        return "never"
+    if rate >= 1:
+        return f"about {rate:.1f} times a year"
+    years = 1.0 / rate
+    if years < 1.05:
+        return "about once a year"
+    return f"about once every {years:.1f} years" if years < 10 else f"about once every {years:.0f} years"
+
+
+def ordinal(n: int) -> str:
+    """71 -> '71st', 12 -> '12th'."""
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 @dataclass
 class SummaryTier:
     """Tier 1 -- the slide."""
     positioned_median: float
     positioned_low: float
     positioned_high: float
-    annual_probability_pct: str
+    tef_text: str
+    chance_at_least_one: float
     recurrence_years: float
     one_sentence: str
     peer_percentile: int | None
@@ -78,7 +99,7 @@ class TEFResult:
     # --- Distribution parameters ---
     lognormal: LognormalParams
 
-    # --- Base rate used ---
+    # --- Base rate used, and how it was derived (one line per step) ---
     base_rate: PERTRange
 
     # --- Dampening config ---
@@ -95,6 +116,15 @@ class TEFResult:
     # --- Dispersion (burstiness over time), keyed "total" and "vectors" -> {key: params} ---
     dispersion: dict = field(default_factory=dict)
 
+    # --- Where the inputs came from: frozen (bundled) or live (data date per input) ---
+    input_provenance: list[str] = field(default_factory=list)
+
+    base_rate_derivation: list[str] = field(default_factory=list)
+
+    # --- The scenario's wording for the plain-language summary (output_templates) ---
+    sentence_template: str = ""
+    attempt_verb: str = ""
+
     @property
     def total_positioned_range(self) -> PERTRange:
         return PERTRange(self.total_positioned_low, self.total_positioned_median, self.total_positioned_high)
@@ -104,10 +134,14 @@ class TEFResult:
         return sum(v.positioned_median for v in self.vectors)
 
     @property
-    def annual_probability_pct(self) -> str:
-        if self.total_positioned_median >= 1.0:
-            return f"{self.total_positioned_median:.1f}/yr"
-        return f"{self.total_positioned_median * 100:.1f}%"
+    def tef_text(self) -> str:
+        """TEF is a frequency: threat events per year, not a probability."""
+        return f"{self.total_positioned_median:.2g} per year ({recurrence_text(self.total_positioned_median)})"
+
+    @property
+    def chance_at_least_one(self) -> float:
+        """Probability of at least one threat event in a year (Poisson at the median rate)."""
+        return 1.0 - math.exp(-self.total_positioned_median)
 
     @property
     def median_recurrence_years(self) -> float:
@@ -137,7 +171,8 @@ class TEFResult:
             positioned_median=total_median,
             positioned_low=self.total_positioned_low,
             positioned_high=self.total_positioned_high,
-            annual_probability_pct=self.annual_probability_pct,
+            tef_text=self.tef_text,
+            chance_at_least_one=self.chance_at_least_one,
             recurrence_years=self.median_recurrence_years,
             one_sentence=self.plain_language_summary(),
             peer_percentile=self.peer_percentile,
@@ -174,9 +209,6 @@ class TEFResult:
 
     def plain_language_summary(self) -> str:
         """Board-ready plain language interpretation."""
-        low_yr = 1.0 / self.total_positioned_high if self.total_positioned_high > 0 else float("inf")
-        high_yr = 1.0 / self.total_positioned_low if self.total_positioned_low > 0 else float("inf")
-
         top_vector = ""
         raw_total = self.raw_vector_total
         if self.vectors and raw_total > 0:
@@ -189,39 +221,48 @@ class TEFResult:
             )
 
         text = (
-            f"Based on industry data, {self.scenario_name.lower()} operators "
-            f"attempt to attack organizations matching your profile roughly once every "
-            f"{self.median_recurrence_years:.0f} years "
-            f"(range: {low_yr:.0f}-{high_yr:.0f} years).{top_vector} "
+            f"{self._opening_sentence()}{top_vector} "
             f"This measures how often adversaries TRY -- not how often they succeed. "
             f"Success probability depends on your controls (assessed separately)."
         )
         if self.peer_percentile is not None:
             text += (
-                f" This estimate is at the {self.peer_percentile}th percentile "
+                f" This estimate is at the {ordinal(self.peer_percentile)} percentile "
                 f"across all {self.peer_context or 'comparable'} organizations."
             )
         return text
+
+    def _opening_sentence(self) -> str:
+        """The scenario's own sentence (output_templates.one_sentence), else a generic one."""
+        values = dict(
+            attempt_verb=self.attempt_verb or "attempt to attack",
+            recurrence=recurrence_text(self.total_positioned_median),
+            low=recurrence_text(self.total_positioned_low),
+            high=recurrence_text(self.total_positioned_high),
+        )
+        generic = ("Based on industry data, threat actors {attempt_verb} organizations "
+                   "matching your profile {recurrence} (range: {low} to {high}).")
+        try:
+            sentence = (self.sentence_template or generic).format(**values)
+        except (KeyError, IndexError, ValueError):  # a custom file with other placeholders
+            sentence = generic.format(**values)
+        return sentence.split(" This measures")[0]
 
     def vector_breakdown_text(self) -> str:
         """Formatted vector breakdown for console output."""
         lines = ["VECTOR BREAKDOWN:"]
         max_name_len = max(len(v.vector_name) for v in self.vectors)
         for v in self.vectors:
-            low_pct = v.positioned_low * 100
-            high_pct = v.positioned_high * 100
             lines.append(
                 f"  {v.vector_name:<{max_name_len + 2}}"
-                f"{v.positioned_low:.5f} - {v.positioned_high:.5f} events/year  "
-                f"({low_pct:.2f}% - {high_pct:.2f}%)"
+                f"{v.positioned_low:.5f} - {v.positioned_high:.5f} events/year"
             )
             for driver in v.primary_drivers:
                 lines.append(f"    -> {driver}")
         lines.append("")
         lines.append(
             f"  {'TOTAL':<{max_name_len + 2}}"
-            f"{self.total_positioned_low:.5f} - {self.total_positioned_high:.5f} events/year  "
-            f"({self.total_positioned_low * 100:.2f}% - {self.total_positioned_high * 100:.2f}%)"
+            f"{self.total_positioned_low:.5f} - {self.total_positioned_high:.5f} events/year"
         )
         lines.append(
             "  (cross-vector dampening applied -- vectors are not fully independent)"
@@ -236,9 +277,9 @@ class TEFResult:
             f"  Recommended distribution: Lognormal\n"
             f"  mu (ln-space): {ln.mu:.3f}\n"
             f"  sigma (ln-space): {ln.sigma:.3f}\n"
-            f"  5th percentile:  {ln.p5:.5f}  ({ln.p5 * 100:.2f}%)\n"
-            f"  Median:          {ln.median:.5f}  ({ln.median * 100:.2f}%)\n"
-            f"  95th percentile: {ln.p95:.5f}  ({ln.p95 * 100:.2f}%)\n"
+            f"  5th percentile:  {ln.p5:.5f} events/year\n"
+            f"  Median:          {ln.median:.5f} events/year\n"
+            f"  95th percentile: {ln.p95:.5f} events/year\n"
             f"\n"
             f"  Alternative: PERT(min={self.total_positioned_low:.5f}, "
             f"mode={self.total_positioned_median:.5f}, "
@@ -275,6 +316,8 @@ class TEFResult:
                 f"tef_dispersion={'None' if inputs['tef_dispersion'] is None else format(inputs['tef_dispersion'], 'g')}")
         if raw is not None and raw != inputs["tef_dispersion"]:
             line += f"\n  (trend-included sensitivity bound: tef_dispersion={raw:g})"
+        if self.input_provenance:
+            line += f"\n  ({self.input_provenance[0]})"
         return line
 
     @property
@@ -326,15 +369,12 @@ class TEFResult:
         lines = ["CREDIBILITY ADJUSTMENT (org telemetry):"]
         max_name = max(len(v.vector_name) for v in blended_vectors)
         for v in blended_vectors:
-            prior_pct = v.prior_median * 100
-            obs_pct = v.observed_frequency * 100
-            blended_pct = v.positioned_median * 100
             lines.append(
                 f"  {v.vector_name:<{max_name + 2}}"
                 f"Z={v.credibility_z:.2f}   "
-                f"prior: {prior_pct:.2f}%  "
-                f"observed: {obs_pct:.2f}%  "
-                f"-> blended: {blended_pct:.2f}%"
+                f"prior: {v.prior_median:.3g}/yr  "
+                f"observed: {v.observed_frequency:.3g}/yr  "
+                f"-> blended: {v.positioned_median:.3g}/yr"
             )
 
         prior_total = sum(v.prior_median for v in blended_vectors)
@@ -342,7 +382,7 @@ class TEFResult:
         delta = blended_total - prior_total
         sign = "+" if delta >= 0 else ""
         lines.append(
-            f"\n  Blended vectors shift: {sign}{delta * 100:.2f}pp"
+            f"\n  Blended vectors shift: {sign}{delta:.3g} per year"
         )
         return "\n".join(lines)
 
@@ -354,6 +394,7 @@ class TEFResult:
             sep,
             f"Estimate Date: {self.estimate_date.strftime('%B %Y')} (point-in-time; refresh quarterly)",
             f"Organization Profile: {self.profile_summary}",
+            *self.input_provenance,
             "",
             self.plain_language_summary(),
             "",
@@ -398,11 +439,7 @@ class TEFResult:
         sections.extend([
             "", sep,
             "BASE RATE DERIVATION:",
-            f"  Three-anchor triangulation: PERT(min={self.base_rate.low}, "
-            f"mode={self.base_rate.mode}, max={self.base_rate.high})",
-            f"  1. Operational tempo: ~{self.base_rate.low * 100:.1f}% (lower bound)",
-            f"  2. IRIS back-calculation: ~{self.base_rate.mode * 100:.1f}% (mode)",
-            f"  3. Coalition market-adjusted: ~{self.base_rate.high * 100:.1f}% (upper bound)",
+            *(f"  {line}" for line in self.base_rate_derivation),
             f"  Dampening coefficient k={self.dampening.factor_k:.2f}: {self.dampening.factor_k_source}",
             "",
             "WHAT THIS ESTIMATE DOES NOT INCLUDE:",
@@ -420,12 +457,12 @@ class TEFResult:
         lines = [
             f"{self.scenario_name.upper()} TEF ESTIMATE",
             "=" * 40,
-            f"Annual probability: {s.annual_probability_pct}",
-            f"Recurrence: ~1 in {s.recurrence_years:.0f} years",
+            f"TEF: {s.tef_text}",
+            f"Chance of at least one attempt in a year: {s.chance_at_least_one:.0%}",
             "",
         ]
         if s.peer_percentile is not None:
-            lines.append(f"Peer percentile: {s.peer_percentile}th ({s.peer_context})")
+            lines.append(f"Peer percentile: {ordinal(s.peer_percentile)} ({s.peer_context})")
             lines.append("")
 
         lines.append("VECTOR BREAKDOWN:")
@@ -436,6 +473,8 @@ class TEFResult:
             lines.append(f"  {d['vector']:<{max_name + 2}} {share:>5.0%} {bar}")
 
         lines.extend(["", s.one_sentence])
+        if self.input_provenance:
+            lines.extend(["", self.input_provenance[0]])
         return "\n".join(lines)
 
     def to_markdown(self) -> str:
@@ -446,23 +485,26 @@ class TEFResult:
             "",
             f"**Date:** {self.estimate_date.strftime('%B %Y')} (point-in-time; refresh quarterly)",
             f"**Profile:** {self.profile_summary}",
+            *[f"**{key}:**{rest}" if sep else line
+              for line in self.input_provenance
+              for key, sep, rest in [line.partition(":")]],
             "",
             "## Summary",
             "",
-            f"| Metric | Value |",
-            f"|--------|-------|",
-            f"| Annual probability | {s.annual_probability_pct} |",
-            f"| Recurrence | ~1 in {s.recurrence_years:.0f} years |",
-            f"| Range | {self.total_positioned_low * 100:.2f}% -- {self.total_positioned_high * 100:.2f}% |",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| TEF | {s.tef_text} |",
+            f"| Range | {self.total_positioned_low:.2g} -- {self.total_positioned_high:.2g} per year |",
+            f"| Chance of at least one attempt in a year | {s.chance_at_least_one:.0%} |",
         ]
         if s.peer_percentile is not None:
-            lines.append(f"| Peer percentile | {s.peer_percentile}th ({s.peer_context}) |")
+            lines.append(f"| Peer percentile | {ordinal(s.peer_percentile)} ({s.peer_context}) |")
         lines.append("")
 
         lines.extend([
             "## Vector Breakdown",
             "",
-            "| Vector | Share | Range |",
+            "| Vector | Share | Range (per year) |",
             "|--------|------:|-------|",
         ])
         raw_total = self.raw_vector_total
@@ -470,7 +512,7 @@ class TEFResult:
             share = v.positioned_median / raw_total if raw_total > 0 else 0
             lines.append(
                 f"| {v.vector_name} | {share:.0%} | "
-                f"{v.positioned_low * 100:.2f}% -- {v.positioned_high * 100:.2f}% |"
+                f"{v.positioned_low:.2g} -- {v.positioned_high:.2g} |"
             )
         lines.append("")
 
@@ -479,12 +521,12 @@ class TEFResult:
             "",
             "| Parameter | Value |",
             "|-----------|-------|",
-            f"| Distribution | Lognormal |",
+            "| Distribution | Lognormal |",
             f"| mu (ln-space) | {self.lognormal.mu:.3f} |",
             f"| sigma (ln-space) | {self.lognormal.sigma:.3f} |",
-            f"| 5th percentile | {self.lognormal.p5 * 100:.2f}% |",
-            f"| Median | {self.lognormal.median * 100:.2f}% |",
-            f"| 95th percentile | {self.lognormal.p95 * 100:.2f}% |",
+            f"| 5th percentile | {self.lognormal.p5:.3g} per year |",
+            f"| Median | {self.lognormal.median:.3g} per year |",
+            f"| 95th percentile | {self.lognormal.p95:.3g} per year |",
             "",
         ])
 
@@ -519,12 +561,7 @@ class TEFResult:
         lines.extend([
             "## Base Rate Derivation",
             "",
-            f"Three-anchor triangulation: PERT(min={self.base_rate.low}, "
-            f"mode={self.base_rate.mode}, max={self.base_rate.high})",
-            "",
-            f"1. Operational tempo: ~{self.base_rate.low * 100:.1f}% (lower bound)",
-            f"2. IRIS back-calculation: ~{self.base_rate.mode * 100:.1f}% (mode)",
-            f"3. Coalition market-adjusted: ~{self.base_rate.high * 100:.1f}% (upper bound)",
+            *(f"- {line}" for line in self.base_rate_derivation),
             "",
             "---",
             "",
@@ -543,11 +580,13 @@ class TEFResult:
             "scenario": self.scenario_name.lower(),
             "profile": self.profile_summary,
             "estimate_date": self.estimate_date.isoformat(),
+            "inputs": list(self.input_provenance),
             "summary": {
                 "positioned_median": s.positioned_median,
                 "positioned_low": s.positioned_low,
                 "positioned_high": s.positioned_high,
-                "annual_probability_pct": s.annual_probability_pct,
+                "tef_text": s.tef_text,
+                "chance_at_least_one": s.chance_at_least_one,
                 "recurrence_years": s.recurrence_years,
                 "peer_percentile": s.peer_percentile,
                 "peer_context": s.peer_context,

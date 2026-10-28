@@ -18,74 +18,76 @@ from tef_estimator.data.loader import (
 )
 
 
-STALENESS_WARNING_DAYS = 90
-STALENESS_STALE_DAYS = 180
-
 REFERENCE_SOURCES = [
-    "iris", "coalition", "at_bay", "beazley", "common",
+    "iris", "at_bay", "beazley", "common",
 ]
+
+DEFAULT_CADENCE_MONTHS = 12
+DAYS_PER_MONTH = 30.44
+
+
+def _metadata(path: Path) -> dict:
+    try:
+        with open(path) as f:
+            return json.load(f).get("_metadata", {})
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def _extract_date(path: Path) -> date | None:
     """Read extracted_date from a JSON file's _metadata."""
+    raw = _metadata(path).get("extracted_date")
     try:
-        with open(path) as f:
-            data = json.load(f)
-        raw = data.get("_metadata", {}).get("extracted_date")
-        if raw:
-            return date.fromisoformat(raw)
-    except (json.JSONDecodeError, ValueError, KeyError):
-        pass
-    return None
+        return date.fromisoformat(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def due_after_months(cadence_months: int) -> int:
+    """A source is due for a check after its own cycle plus a grace period."""
+    return cadence_months + max(2, cadence_months // 4)
+
+
+def bundled_editions() -> list[str]:
+    """Editions of the bundled reference sources, e.g. ["IRIS 2025", ...]."""
+    editions = []
+    for source in REFERENCE_SOURCES:
+        edition = _metadata(REFERENCE_DIR / source / "extracted.json").get("edition")
+        if edition:
+            editions.append(edition)
+    return editions
 
 
 def check_freshness(today: date | None = None) -> list[str]:
-    """Return staleness warnings for all data sources.
+    """Data files that are past their own update cycle.
 
-    Returns a list of human-readable warning strings.
-    Empty list means everything is fresh.
+    Each file's _metadata gives cadence_months (annual reports 12, quarterly
+    3; scenario files are reviewed per release, 12). A file is flagged once
+    its extraction is older than the cycle plus a grace period, meaning a
+    newer edition may exist. Empty list: nothing is due.
     """
     today = today or date.today()
-    warnings: list[str] = []
+    files = [(source, REFERENCE_DIR / source / "extracted.json") for source in REFERENCE_SOURCES]
+    files += [(f"scenario {p.stem}", p) for p in sorted(SCENARIOS_DIR.glob("*.json"))]
 
-    for source in REFERENCE_SOURCES:
-        path = REFERENCE_DIR / source / "extracted.json"
+    warnings: list[str] = []
+    for name, path in files:
         if not path.exists():
             continue
+        meta = _metadata(path)
+        label = meta.get("edition") or name
         extracted = _extract_date(path)
         if extracted is None:
-            warnings.append(
-                f"Data source '{source}' has no extracted_date — age unknown"
-            )
+            warnings.append(f"{label}: no extracted_date, age unknown")
             continue
-        age = (today - extracted).days
-        if age > STALENESS_STALE_DAYS:
+        cadence = meta.get("cadence_months", DEFAULT_CADENCE_MONTHS)
+        due = due_after_months(cadence)
+        months = (today - extracted).days / DAYS_PER_MONTH
+        if months > due:
             warnings.append(
-                f"Data source '{source}' is {age} days old "
-                f"(extracted {extracted.isoformat()}). Consider refreshing."
+                f"{label}: extracted {extracted.isoformat()}, {months:.0f} months ago "
+                f"(updates every {cadence} months); check for a newer edition"
             )
-        elif age > STALENESS_WARNING_DAYS:
-            warnings.append(
-                f"Data source '{source}' is {age} days old "
-                f"(extracted {extracted.isoformat()})"
-            )
-
-    for scenario_file in sorted(SCENARIOS_DIR.glob("*.json")):
-        extracted = _extract_date(scenario_file)
-        if extracted is None:
-            continue
-        age = (today - extracted).days
-        if age > STALENESS_STALE_DAYS:
-            warnings.append(
-                f"Scenario '{scenario_file.stem}' is {age} days old "
-                f"(extracted {extracted.isoformat()}). Consider refreshing."
-            )
-        elif age > STALENESS_WARNING_DAYS:
-            warnings.append(
-                f"Scenario '{scenario_file.stem}' is {age} days old "
-                f"(extracted {extracted.isoformat()})"
-            )
-
     return warnings
 
 
@@ -117,7 +119,7 @@ def run_check() -> dict[str, str]:
 
     print()
 
-    for scenario in ["ransomware", "bec"]:
+    for scenario in sorted(p.stem for p in SCENARIOS_DIR.glob("*.json")):
         path = SCENARIOS_DIR / f"{scenario}.json"
         if path.exists():
             results[f"scenario_{scenario}"] = "present"

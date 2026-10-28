@@ -3,9 +3,11 @@
     "source": "Beazley Q3 2025 Threat Briefing",
     "access": "Free download: https://www.beazley.com/thought-leadership/cyber-and-tech/",
     "extracted_date": "2026-05-24",
+    "edition": "Beazley Q3 2025",
+    "cadence_months": 3,
     "extracted_by": "Laura Voicu"
   },
-  "_substrata_assessment": {
+  "_source_assessment": {
     "source_id": "beazley",
     "verdict": "pass_with_caveats",
     "methodology_transparency": "thin",

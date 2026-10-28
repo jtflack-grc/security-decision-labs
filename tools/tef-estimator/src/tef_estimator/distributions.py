@@ -40,6 +40,12 @@ def pert_distribution(r: PERTRange, lam: float = 4.0) -> stats.rv_continuous:
         # Degenerate — return a constant
         return stats.uniform(loc=a, scale=0)
 
+    # Symmetric PERT (mode at the midpoint): b == mu, so the (b - mu)
+    # denominator below would be zero. alpha == beta in closed form.
+    if abs(b - mu) < 1e-12:
+        shape = 1.0 + lam / 2.0
+        return stats.beta(shape, shape, loc=a, scale=c - a)
+
     alpha_param = ((mu - a) * (2 * b - a - c)) / ((b - mu) * (c - a))
     if alpha_param <= 0:
         alpha_param = 1.0  # Fallback for edge cases

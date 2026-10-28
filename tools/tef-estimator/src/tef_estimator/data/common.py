@@ -11,7 +11,6 @@ This module contains data that applies regardless of threat type:
 - Floor anchors (overall, not scenario-adjusted)
 - Dampening configuration
 - Data vintage tracking
-- Coalition bias correction
 """
 
 from __future__ import annotations
@@ -117,17 +116,6 @@ class RevenueBandData:
         return PERTRange(low=max(0.05, m * 0.7), mode=m, high=m * 1.3)
 
 
-@dataclass
-class DampeningConfig:
-    """Controls how correlated multipliers are compressed."""
-    factor_k: float = 0.70
-    vector_k: float = 0.85
-    max_composite: float = 5.0
-    factor_k_source: str = ""
-    vector_k_source: str = ""
-    max_composite_source: str = ""
-
-
 # ---------------------------------------------------------------------------
 # Load all empirical data from JSON
 # ---------------------------------------------------------------------------
@@ -135,11 +123,10 @@ class DampeningConfig:
 def _load_common_data() -> tuple:
     """Load all scenario-independent data from JSON reference files."""
     iris = load_reference("iris")
-    coalition = load_reference("coalition")
     at_bay = load_reference("at_bay")
     common = load_reference("common")
 
-    # Sector multipliers — IRIS 2025 Fig A1
+    # Sector multipliers — IRIS 2025
     sector_data: dict[Sector, SectorData] = {}
     for sector_key, vals in iris["sector_multipliers"].items():
         if sector_key.startswith("_"):
@@ -150,7 +137,7 @@ def _load_common_data() -> tuple:
             event_count_2019_2023=vals.get("event_count_2019_2023"),
         )
 
-    # Revenue band multipliers — IRIS 2025 Fig A2
+    # Revenue band multipliers — IRIS 2025
     revenue_data: dict[RevenueBand, RevenueBandData] = {}
     for band_key, vals in iris["revenue_band_multipliers"].items():
         if band_key.startswith("_"):
@@ -187,19 +174,8 @@ def _load_common_data() -> tuple:
         if not k.startswith("_")
     }
 
-    # Coalition bias correction
-    coalition_bias = coalition["bias_correction"]["factor"]
-
     # Dampening config defaults
-    damp = common["dampening_config"]
-    dampening_defaults = DampeningConfig(
-        factor_k=damp["factor_k"],
-        vector_k=damp["vector_k"],
-        max_composite=damp["max_composite"],
-        factor_k_source=damp["factor_k_source"],
-        vector_k_source=damp["vector_k_source"],
-        max_composite_source=damp["max_composite_source"],
-    )
+    dampening_defaults = common["dampening_config"]
 
     # Data vintage
     data_vintage = common["data_vintage"]
@@ -211,7 +187,6 @@ def _load_common_data() -> tuple:
         tech_multipliers,
         geo_multipliers,
         profile_multipliers,
-        coalition_bias,
         dampening_defaults,
         data_vintage,
     )
@@ -224,17 +199,22 @@ def _load_common_data() -> tuple:
     TECH_MULTIPLIERS,
     GEO_MULTIPLIERS,
     PROFILE_MULTIPLIERS,
-    COALITION_BIAS_CORRECTION,
     _DAMPENING_DEFAULTS,
     DATA_VINTAGE,
 ) = _load_common_data()
 
-# Patch DampeningConfig defaults from JSON
-DampeningConfig.__init__.__defaults__ = (
-    _DAMPENING_DEFAULTS.factor_k,
-    _DAMPENING_DEFAULTS.vector_k,
-    _DAMPENING_DEFAULTS.max_composite,
-    _DAMPENING_DEFAULTS.factor_k_source,
-    _DAMPENING_DEFAULTS.vector_k_source,
-    _DAMPENING_DEFAULTS.max_composite_source,
-)
+
+@dataclass
+class DampeningConfig:
+    """Controls how correlated multipliers are compressed.
+
+    Defaults come from the bundled ``common`` reference data; pass explicit
+    values to override (e.g. a sensitivity sweep). The ``*_source`` fields
+    carry the provenance string used in the audit trail.
+    """
+    factor_k: float = _DAMPENING_DEFAULTS["factor_k"]
+    vector_k: float = _DAMPENING_DEFAULTS["vector_k"]
+    max_composite: float = _DAMPENING_DEFAULTS["max_composite"]
+    factor_k_source: str = _DAMPENING_DEFAULTS["factor_k_source"]
+    vector_k_source: str = _DAMPENING_DEFAULTS["vector_k_source"]
+    max_composite_source: str = _DAMPENING_DEFAULTS["max_composite_source"]

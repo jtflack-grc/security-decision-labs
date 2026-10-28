@@ -63,3 +63,19 @@ def pert_from_list(values: list[float]) -> tuple[float, float, float]:
     if len(values) != 3:
         raise ValueError(f"PERT range requires exactly 3 values, got {len(values)}: {values}")
     return (values[0], values[1], values[2])
+
+
+def normalized_proportions(raw: dict[str, Any]) -> dict[str, tuple[float, float, float]]:
+    """Vector proportions scaled so their modes sum to 1.
+
+    The four vectors carry the scenario's whole base rate. Source
+    triangulations can leave a remainder (other or unattributed initial
+    access, e.g. modes summing to 0.95); it is allocated to the vectors in
+    proportion, by scaling low, mode and high of each vector by 1 / (sum of
+    modes). The extracted values in the data files stay as published.
+    """
+    parsed = {k: pert_from_list(v) for k, v in raw.items() if not k.startswith("_")}
+    total = sum(mode for _, mode, _ in parsed.values())
+    if total <= 0:
+        raise ValueError("vector proportion modes must sum to a positive number")
+    return {k: (lo / total, mode / total, hi / total) for k, (lo, mode, hi) in parsed.items()}

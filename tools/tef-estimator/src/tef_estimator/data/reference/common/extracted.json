@@ -2,10 +2,11 @@
   "_metadata": {
     "source": "Cross-source derived parameters and judgment-based estimates",
     "extracted_date": "2026-05-24",
+    "cadence_months": 12,
     "extracted_by": "Laura Voicu",
     "note": "Geographic and profile multipliers are judgment-based ranges informed by DBIR/IRIS patterns. Dampening parameters are explicitly judgment-based pending empirical replacement."
   },
-  "_substrata_assessment": {
+  "_source_assessment": {
     "source_id": "derived",
     "verdict": "n/a",
     "methodology_transparency": "n/a",
@@ -63,13 +64,13 @@
     "_quality_tier": 2
   },
   "dampening_config": {
-    "_citation": "VERIS VCDB co-occurrence analysis (10,037 incidents, scripts/compute_dampening.py) for vector_k; judgment-based for factor_k (VERIS lacks population denominators needed for within-vector derivation)",
+    "_citation": "VERIS VCDB co-occurrence analysis (10,037 incidents, scripts/compute_dampening.py) for vector_k; judgment for factor_k, checked on StatCan and VCDB ÷ Census (docs/dampening-k.md)",
     "factor_k": 0.7,
     "vector_k": 0.85,
     "max_composite": 5.0,
-    "factor_k_source": "Judgment-based (0.70). VERIS incident data cannot derive within-vector dampening: sector×size co-occurrence in incidents conflates risk interaction with population correlation (financial orgs tend to be large). Requires population denominators unavailable in VCDB.",
+    "factor_k_source": "Judgment (0.70): profile factors overlap (e.g. manufacturers more often run exposed VPNs), so full multiplication double-counts. Checked 2026-10-26 on sector × size: StatCan about 0.7–0.75, VCDB ÷ Census 0.86–0.96, so 0.70 is at the low end; with 0.70, 95% of ransomware profiles ($10M–$10B) imply an annual loss inside IRIS's lower/upper bracket, against 89% at k = 1.0 (docs/dampening-k.md).",
     "vector_k_source": "VERIS VCDB empirical (10,037 incidents, 1,789 with mapped vectors, 218 multi-vector). Bimodal pairwise structure: exploitation↔credential/phishing are substitutes (lift~0.2, vectors rarely co-occur), credential↔phishing are strong complements (lift=8.29, 95% CI [7.46,9.18]). Median pairwise lift=1.33 → k=0.75, but no single k fits the bimodal distribution. k=0.85 is a defensible aggregate: dampens the dominant credential-phishing co-occurrence without over-dampening independent exploitation pairs.",
-    "max_composite_source": "Transparent cap: no profile should produce >5x the base rate. Rationale: IRIS overall upper bound (10%) / base rate mode (1%) ~ 10x; 5x allows differentiation while preventing runaway stacking.",
+    "max_composite_source": "Transparent cap: no profile should produce >5x the base rate. Rationale: IRIS ransomware P(≥1) lower (0.49%) to upper bound (10.6%) ~22x; 5x allows differentiation while preventing runaway stacking.",
     "veris_pairwise_lifts": {
       "_note": "Empirical lift values from VERIS VCDB. Lift>1 = vectors co-occur (complements); lift<1 = vectors are alternatives (substitutes). See data/veris/dampening_analysis.json for full output.",
       "exploitation_x_credential": {
@@ -129,14 +130,14 @@
     "_quality_tier": 2
   },
   "data_vintage": {
-    "iris_2025": "Cyentia IRIS 2025 (150k+ events, 2008-2024)",
-    "iris_ransomware": "Cyentia IRIS Ransomware Spotlight (14k+ events, 2019-2023)",
-    "dbir_2025": "DBIR 2025 (Verizon)",
-    "coalition_2025": "Coalition 2025 Cyber Claims Report (2024 data)",
+    "event_counts": "Ransomware.live, FBI IC3 2025 (US events)",
+    "census_susb_2022": "Census SUSB 2022 (US firms)",
+    "iris": "Cyentia IRIS 2025 + Ransomware Spotlight (floors, multipliers)",
+    "coveware": "Coveware Q4 2024–Q4 2025 (under-reporting, victim sizes)",
+    "veris_vcdb": "VERIS Community Database (exfiltration victim sizes, cross-vector dampening)",
+    "dbir_2026": "DBIR 2026 (Verizon)",
     "at_bay_2025": "At-Bay 2025 InsurSec Report (2024 data)",
     "beazley_q3_2025": "Beazley Q3 2025 Threat Briefing",
-    "naic_2025": "NAIC 2025 Cybersecurity Insurance Market Report",
-    "veris_vcdb": "VERIS Community Database (10,037 validated incidents, multi-year). Used for cross-vector dampening coefficient empirical derivation.",
     "_derivation_method": "extracted",
     "_quality_tier": 2
   }

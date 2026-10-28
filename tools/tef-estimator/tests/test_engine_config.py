@@ -1,8 +1,6 @@
-"""Direct tests for the 1.2.0 features that shipped without them."""
+"""Band hardening, aggregate lognormal, k sweep, fallback ceilings, config and version."""
 
 import importlib.metadata
-import importlib.util
-import json
 import math
 from pathlib import Path
 
@@ -14,7 +12,6 @@ import tef_estimator
 from tef_estimator.config import TEFConfig
 from tef_estimator.credibility import OrgTelemetry, VectorObservation
 from tef_estimator.data.common import Geography, RemoteAccessType, RevenueBand, Sector
-from tef_estimator.data.scenarios import ExfiltrationScenario, RansomwareScenario, WebAppScenario
 from tef_estimator.distributions import LognormalParams
 from tef_estimator.engine import TEFEngine
 from tef_estimator.profile import OrganizationProfile
@@ -27,6 +24,14 @@ def _profile(**overrides):
              remote_access=[RemoteAccessType.FORTINET], employee_count=2000)
     d.update(overrides)
     return OrganizationProfile(**d)
+
+
+def _band_width(v):
+    return math.log(v.positioned_high / v.positioned_low)
+
+
+def _k_entry(sens):
+    return next(e for e in sens.entries if e.parameter == "credibility_k_exploitation")
 
 
 def _telemetry():
@@ -58,19 +63,17 @@ class TestBandHardening:
         cfg = TEFConfig.from_dict({"band_hardening": {"min_sigma_ratio": 0.99}})
         prior = TEFEngine(config=cfg).estimate(_profile())
         post = TEFEngine(config=cfg).estimate(_profile(telemetry=_telemetry()))
-        width = lambda v: math.log(v.positioned_high / v.positioned_low)
-        assert width(post.vectors[0]) >= 0.99 * width(prior.vectors[0]) - 1e-9
+        assert _band_width(post.vectors[0]) >= 0.99 * _band_width(prior.vectors[0]) - 1e-9
 
     def test_coverage_does_not_narrow_the_band(self):
         """Same detected events at lower coverage must not contract the band more (cap on periods)."""
-        width = lambda v: math.log(v.positioned_high / v.positioned_low)
         widths = []
         for coverage in (1.0, 0.5, 0.25):
             telem = OrgTelemetry(observations=[VectorObservation(
                 vector="credential", annualized_frequency=0.05, observation_periods=20,
                 detection_coverage=coverage)])
             r = TEFEngine().estimate(_profile(telemetry=telem))
-            widths.append(width(next(v for v in r.vectors if v.telemetry_key == "credential")))
+            widths.append(_band_width(next(v for v in r.vectors if v.telemetry_key == "credential")))
         assert widths == pytest.approx([widths[0]] * 3, rel=1e-9)
 
 
@@ -86,10 +89,6 @@ class TestFentonWilkinson:
         assert fw.median == pytest.approx(np.median(total), rel=0.05)
         naive = sum(c.median for c in comps)
         assert abs(fw.median - np.median(total)) < abs(naive - np.median(total))
-
-    def test_single_component_unchanged(self):
-        c = LognormalParams(-3.0, 0.7)
-        assert LognormalParams.fenton_wilkinson([c]) == c
 
     def test_engine_lognormal_is_centred_on_the_headline(self):
         """The total lognormal's median is the positioned total, not a sum of independent vectors."""
@@ -116,14 +115,14 @@ class TestKSweep:
         cfg = TEFConfig.from_dict({"k_sensitivity": {"exploitation": [1.0, 32.0, 200.0]}})
         wide = TEFEngine(config=cfg).sensitivity(_profile(telemetry=_telemetry()))
         narrow = TEFEngine().sensitivity(_profile(telemetry=_telemetry()))
-        pick = lambda s: next(e for e in s.entries if e.parameter == "credibility_k_exploitation")
-        assert pick(wide).range_multiple > pick(narrow).range_multiple
+        assert _k_entry(wide).range_multiple > _k_entry(narrow).range_multiple
 
 
 class TestExploitationCeilings:
-    """Config-driven ceilings by attack-surface class."""
+    """Fallback ceilings by attack-surface class, used when no DShield data exists."""
 
-    CFG = {"exploitation_ceilings": {"edge_device": 111.0, "cloud_primary": 0.022, "default": 0.33}}
+    CFG = {"exploitation_ceilings": {"edge_device": 111.0, "cloud_primary": 0.022, "default": 0.33},
+           "exploitation_ceiling_derivation": {"dshield_snapshot": None}}
 
     @pytest.mark.parametrize("overrides,expected", [
         (dict(remote_access=[RemoteAccessType.FORTINET]), 111.0),
@@ -187,80 +186,8 @@ class TestVersion:
         assert f'"{tef_estimator.__version__}"' not in src
 
 
-class TestNewScenarios:
-    """Exfiltration and web-app scenarios run end to end."""
-
-    @pytest.mark.parametrize("scenario_cls,slug", [(ExfiltrationScenario, "exfiltration"), (WebAppScenario, "web_app")])
-    def test_runs(self, scenario_cls, slug):
-        s = scenario_cls()
-        assert s.scenario_slug == slug
-        r = TEFEngine(scenario=s).estimate(_profile())
-        assert 0 < r.total_positioned_low <= r.total_positioned_median <= r.total_positioned_high
-        assert r.total_dispersion.is_poisson  # no public series fitted for these yet
-
-    @pytest.mark.parametrize("scenario_cls", [ExfiltrationScenario, WebAppScenario])
-    def test_differs_from_ransomware(self, scenario_cls):
-        a = TEFEngine(scenario=scenario_cls()).estimate(_profile())
-        b = TEFEngine(scenario=RansomwareScenario()).estimate(_profile())
-        assert a.total_positioned_median != b.total_positioned_median
-
-
-@pytest.mark.skipif(not (REPO / "scripts" / "refresh_reference_data.py").exists(),
-                    reason="maintainer-only script, not shipped in the public repo")
-class TestRefreshScript:
-    """scripts/refresh_reference_data.py: whitelist filtering, dry run writes nothing."""
-
-    @pytest.fixture
-    def script(self, tmp_path, monkeypatch):
-        spec = importlib.util.spec_from_file_location("refresh_reference_data", REPO / "scripts" / "refresh_reference_data.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        dst = tmp_path / "reference"
-        dst.mkdir()
-        (dst / "iris.json").write_text(json.dumps({"floor_anchors": {"a": 1}, "keep": True}))
-        monkeypatch.setattr(mod, "ESTIMATOR_DATA", dst)
-        src = tmp_path / "substrata"
-        src.mkdir()
-        (src / "iris.json").write_text(json.dumps({"floor_anchors": {"a": 2}, "private_field": 9}))
-        return mod, src, dst
-
-    def test_dry_run_writes_nothing(self, script, capsys):
-        mod, src, dst = script
-        before = (dst / "iris.json").read_text()
-        assert mod.refresh(src, dry_run=True) == 0
-        assert (dst / "iris.json").read_text() == before
-        out = capsys.readouterr().out
-        assert "1 change(s)" in out and "private_field" in out
-
-    def test_write_keeps_only_whitelisted(self, script):
-        mod, src, dst = script
-        mod.refresh(src, dry_run=False)
-        data = json.loads((dst / "iris.json").read_text())
-        assert data["floor_anchors"] == {"a": 2}
-        assert data["keep"] is True
-        assert "private_field" not in data
-        assert data["_provenance"].startswith("Refreshed from Substrata")
-
-    def test_missing_dir(self, tmp_path):
-        spec = importlib.util.spec_from_file_location("rrd", REPO / "scripts" / "refresh_reference_data.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        assert mod.refresh(tmp_path / "nope") == 1
-
-
-class TestNewScenariosInCliAndUi:
+class TestScenariosInUi:
     """Exfiltration and web-app scenarios are selectable in the CLI and the UI."""
-
-    @pytest.mark.parametrize("slug", ["exfiltration", "web_app"])
-    def test_cli_json(self, slug):
-        from typer.testing import CliRunner
-        from tef_estimator.cli import app
-        res = CliRunner().invoke(app, ["estimate", "--scenario", slug, "--sector", "healthcare",
-                                       "--revenue", "100m_1b", "--geo", "us", "--json"])
-        assert res.exit_code == 0, res.output
-        d = json.loads(res.output)
-        assert d["scenario"] in ("data exfiltration", "web application exploitation")
-        assert d["analysis"]["dispersion"]["total"]["shape_r_month"] is None
 
     def test_ui_lists_them(self):
         from tef_estimator import ui

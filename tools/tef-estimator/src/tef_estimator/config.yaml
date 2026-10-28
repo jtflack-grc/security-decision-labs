@@ -16,7 +16,9 @@ susceptibility_prior:
 
 # Dampening compresses correlated multipliers to prevent runaway stacking.
 dampening:
-  # Within-vector: compresses sector x revenue x tech x geo interaction.
+  # Within-vector: profile factors overlap, so the composite keeps 70% of its
+  # distance from 1 (judgment, checked against IRIS,
+  # StatCan and VCDB ÷ Census: docs/dampening-k.md).
   factor_k: 0.70
   # Cross-vector: compresses the sum of four vector estimates.
   # Empirically supported by VERIS VCDB co-occurrence analysis (10,037 incidents).
@@ -29,15 +31,13 @@ dampening:
 # telemetry Z = n / (n + k), n = observation_periods x detection_coverage.
 # k describes how much rates differ BETWEEN organizations (heterogeneity).
 # Only cross-organization data (IRIS-type, insurer portfolios) can measure it.
-# All four values are asserted (expert judgment) as of 1.2.0. Earlier notes
-# cited time-series NegBin fits (KEV, HIBP) for exploitation and credential;
-# those measure burstiness over time (see "dispersion"), not differences
-# between organizations, so they cannot ground k. Planned: fit k from
-# cross-organization data (a methods change that will move telemetry estimates).
+# All four values are asserted (expert judgment). Time-series fits measure
+# burstiness over time (see "dispersion"), not differences between
+# organizations, so they cannot ground k; that needs cross-organization data.
 credibility_k:
   exploitation: 6.0
   exploitation_calibration: asserted
-  exploitation_citation: "Judgment, unchanged from 1.1.x. A 1.2.0 draft raised it to 32 from a KEV time-series fit, which can't measure k, so it stays at 6 until cross-organization data grounds it. Not grounded in cross-organization data yet."
+  exploitation_citation: "Judgment. Time-series fits measure burstiness over time, not differences between organizations, so they can't set k; not grounded in cross-organization data yet."
   credential: 10.0
   credential_calibration: asserted
   credential_citation: "Judgment. Moderate observability via auth logs and gateways. Not grounded in cross-organization data yet."
@@ -54,23 +54,55 @@ band_hardening:
   coverage_leverage_cap: 5.0
 
 # k-sensitivity sweep ranges [low, asserted, high] per vector.
-# Judgment ranges around the asserted k (see credibility_k above). The low ends
-# were first set from time-series dispersion fits, which don't measure k; they
-# are kept as plausible lower bounds, not as fitted values. Exploitation sweeps
-# upward instead: 32 shows what slower credibility would do.
+# Judgment ranges around the asserted k (see credibility_k above); the low ends
+# are plausible lower bounds, not fitted values. Exploitation sweeps upward:
+# 32 shows what slower credibility would do.
 k_sensitivity:
   exploitation: [6.0, 6.0, 32.0]
   credential: [6.0, 10.0, 10.0]
   phishing: [6.0, 10.0, 10.0]
   supply_chain: [20.0, 40.0, 40.0]
 
-# Exploitation vector ceiling values (annual probability).
-# edge_device: scanning+exploitation tempo against VPN/RDP (DShield placeholder).
-# cloud_primary: no edge attack surface.
-# default: moderate attack surface.
+# Exploitation vector ceiling, derived:
+#   ceiling/yr = daily unique scanning sources on the exposed ports (30-day average)
+#                × (GreyNoise malicious rate + 0.5 × suspicious rate)
+#                ÷ campaign-to-IP ratio (lognormal median, exp(mu))
+#                × 365 × scenario share of malicious scanning (mode) × PoA (high, as for a ceiling)
+# Rates, ratio, share and PoA come from each scenario's exploitation_scanning block.
+# Exposed ports by profile: VPN vendor → vpn; RDP → rdp; both → union; no
+# remote access → web (public-facing apps); otherwise default.
+# The ceiling is a logical maximum, a sanity check: it is reported and checked
+# per vector, never used to cap the positioned values.
+# dshield_snapshot ships with the release and is refreshed per release.
+exploitation_ceiling_derivation:
+  ports:
+    vpn: [443, 8443]
+    rdp: [3389]
+    web: [443, 8080]
+    default: [443, 445, 8080]
+  # GreyNoise does not publish a suspicious rate;
+  # ~30-40% of scanning IPs (judgment, mode used).
+  suspicious_rate: 0.35
+  suspicious_rate_basis: "judgment (approximate range 30-40%)"
+  dshield_snapshot:
+    date: "2026-10-23"
+    window: "30-day average of daily unique source IPs"
+    source: "SANS ISC DShield porthistory API, collected 2026-10-24"
+    unique_sources:
+      22: 21747
+      23: 21620
+      443: 18863
+      445: 6072
+      3389: 2992
+      8080: 14840
+      8443: 4861
+
+# Fallback exploitation ceilings, used only when no DShield data is available
+# (annual probability). Unsourced assumptions from the initial release; the
+# derivation above replaces them.
 # _basis: grounded (data-sourced), interpolated, assumption (judgment).
 # Revenue-per-employee (RPE, USD thousands) by sector.
-# Source: Damodaran Online (SBC-reconstructed, amber badge).
+# Source: Damodaran Online.
 # Used to infer employee_count when not provided:
 #   employees = revenue_midpoint / (rpe * 1000)
 # Sub-sector overrides take priority (e.g., NAICS 622 hospitals).
@@ -93,19 +125,12 @@ revenue_per_employee:
 # Dispersion: burstiness of the rate over time (Gamma-mixed rate -> negative
 # binomial counts). Not credibility k (k = how rates differ BETWEEN orgs).
 # shape r is the Gamma shape of the shared monthly rate multiplier, fitted on
-# public monthly series. Exploitation: CISA KEV new entries, Jan 2023-May 2026
-# (41 months, the window the timescale analysis rests on; a 12-month window,
-# Jun 2025-May 2026, gives r = 46.4, raw 23.0, kept as a sensitivity case).
-# Ransomware: ransomware.live leak-site postings, Jun 2025-May 2026 (fits run
-# 2026-10-16; refit on a newer window when refreshing reference data).
+# public monthly series; each shape's source names series, window and data date.
 # Lower r = burstier. null = Poisson (no public series to fit).
 # timescale: how long a shock lasts. "month" = independent monthly shocks
-#   (annual shape = 12 r); "year" = one shock persists all year (annual shape
-#   = r, the cautious alternative). Default "month": KEV residuals show no
-#   month-to-month carry-over once the 2022 catalogue back-fill is excluded
-#   (Ljung-Box p 0.97-0.99, 2023-2026), and quarterly shapes are ~3.6-4.4x the
-#   monthly ones, as independent months predict (~3). Full analysis:
-#   docs/dispersion-timescale.md, scripts/dispersion_timescale_check.py.
+#   (annual shape = 12 r, default); "year" = one shock persists all year
+#   (annual shape = r, the cautious alternative). Evidence:
+#   docs/dispersion-timescale.md.
 # basis: "detrended" (NB2 regression with a time trend) is the default;
 #   "raw" (method of moments, absorbs the trend) is the sensitivity bound.
 dispersion:
@@ -113,17 +138,84 @@ dispersion:
   basis: detrended
   vectors:
     exploitation:
-      shape_r: 21.6
-      raw_shape_r: 13.3
-      source: "CISA KEV new entries per month, Jan 2023-May 2026 (2022 catalogue back-fill excluded; linear trend). KEV counts vulnerabilities CISA newly added to the catalog, not attacks."
+      shape_r: 22.5
+      raw_shape_r: 10.5
+      source: "CISA KEV new entries per month, May 2023-Sep 2026 (41 months; 2022 catalogue back-fill excluded; linear trend). Telemetry collected through 2026-10-24. KEV counts vulnerabilities CISA newly added to the catalog, not attacks."
     credential: null
     phishing: null
     supply_chain: null
   scenarios:
     ransomware:
-      shape_r: 129.7
-      raw_shape_r: 34.9
-      source: "ransomware.live leak-site postings per month, Jun 2025-May 2026. Batching inflates dispersion, so r is on the conservative (low) side."
+      shape_r: 113.7
+      raw_shape_r: 46.3
+      source: "ransomware.live victims per month by attack date, Aug 2025-Jul 2026 (monthly API; 8,871 victims, all with an attack date; the 2 latest months left out for posting lag; linear trend). Telemetry collected through 2026-10-24."
+  # Live refit on the telemetry DB (used when telemetry_inputs is "live").
+  # Same recipe as the bundled shapes: a trailing window of complete months,
+  # never before earliest_month, minus censor_months still filling with late
+  # reports. Outside shape_bounds or below min_months the bundled value is
+  # kept; a refit differing from it by more than warn_rel_change is logged.
+  #   exploitation: CISA KEV, 41 months, 2022 catalogue back-fill excluded.
+  #   ransomware: victims by attack date, 12 months as the bundled fit; the 2
+  #     latest months are left out while late postings arrive.
+  live:
+    shape_bounds: [1.0, 1000.0]
+    warn_rel_change: 0.5
+    series:
+      exploitation:
+        window_months: 41
+        earliest_month: "2023-01"
+        min_months: 24
+        censor_months: 0
+      ransomware:
+        window_months: 12
+        earliest_month: null
+        min_months: 12
+        censor_months: 2
+        # A fully collected month has victims on every day; a month with rows
+        # on fewer days was not fully fetched and is not fitted
+        min_day_coverage: 0.9
+
+# Telemetry collector settings.
+# ransomware_live.attack_months: victims by attack date come from the monthly
+#   API (api.ransomware.live/v2/victims/YYYY/MM); the bulk victims.json has no
+#   attack date. The anonymous API allows 1 request per minute and is free for
+#   non-commercial use. Months are cached; which months are fetched follows
+#   dispersion.live.series.ransomware (window + censored months + the current
+#   month + one leading month, so the window's first month is complete).
+#   Months still filling (current + censored) are refetched when their cached
+#   copy is older than refetch_after_hours; settled months are fetched once.
+telemetry_collectors:
+  # dshield: each run fills every port's daily series up to today, from the
+  # last stored day minus overlap_days (the current day is partial until it
+  # ends), or history_days back for a port with no data (enough for the
+  # integrator's 90-day window). Requests cover at most chunk_days each,
+  # request_delay_seconds apart (SANS ISC API).
+  dshield:
+    history_days: 90
+    chunk_days: 90
+    overlap_days: 2
+    request_delay_seconds: 2
+  ransomware_live:
+    attack_months:
+      request_interval_seconds: 61
+      refetch_after_hours: 20
+      retries: 1
+
+# Live ransomware base rate. In live mode the US victim count (N_US) comes from
+# collected victims by attack date over the dispersion fit's window (12 complete
+# months, 2 censored): N_US = US victims + unknown-country victims × US share
+# among the known. It replaces n_us in ransomware.json base_rate_lef, and the
+# same recipe gives the base rate (base_rate.py). Outside bounds × the bundled
+# n_us the bundled count is kept.
+tempo_anchor:
+  scenario: ransomware
+  bounds: [0.5, 2.0]
+
+# Where estimate inputs come from. "frozen" (default): bundled reference values
+# only, so an estimate is reproducible from the package version alone. "live":
+# the dispersion shapes and the ransomware base rate are derived from
+# ~/.tef-estimator/telemetry.db, and the output cites the data vintage. Override per run with `--live` / `--frozen`.
+telemetry_inputs: frozen
 
 exploitation_ceilings:
   edge_device: 1000.0

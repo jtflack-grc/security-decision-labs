@@ -21,11 +21,20 @@ from tef_estimator.telemetry.db import TelemetryDB
 log = logging.getLogger(__name__)
 
 DAILY_SOURCES = {
+    # Unique scanning sources measure attacker activity; record and target
+    # counts follow DShield's own sensor coverage, so they are not monitored.
     "dshield": {
         "event_type": "scan_activity",
+        "metric_prefixes": ["unique_sources_port_"],
     },
+    # Only the discovery-date victim count is a timely daily series. The
+    # group census is a per-group running total snapshotted on collection
+    # days, not a daily count; the attack-date count is undercounted for weeks
+    # by posting lag, so its recent days would always read as a drop (it
+    # serves the dispersion fit, which leaves those months out).
     "ransomware_live": {
         "event_type": "ransomware_activity",
+        "metrics": ["daily_victim_count"],
     },
 }
 
@@ -33,12 +42,45 @@ EVENT_SOURCES = {
     "cisa_kev": {
         "event_type": "vulnerability_catalog",
     },
-    "greynoise": {
-        "event_type": "internet_noise",
+}
+
+# Event catalogs whose daily addition counts form a meaningful tempo series.
+DERIVED_ADDITION_SERIES = {
+    "cisa_kev": {
+        "metric_prefix": "kev_CVE-",
+        "series_name": "kev_additions",
     },
 }
 
 DEFAULT_LOOKBACK_DAYS = 90
+
+_AVG_SUFFIXES = ("_7d_avg", "_30d_avg")
+
+
+def _base_metric(metric_name: str) -> str:
+    for suffix in _AVG_SUFFIXES:
+        if metric_name.endswith(suffix):
+            return metric_name[: -len(suffix)]
+    return metric_name
+
+
+def is_sparse(source_id: str, metric_name: str) -> bool:
+    """Whether a metric is a derived additions series (sparse daily counts)."""
+    derived = DERIVED_ADDITION_SERIES.get(source_id)
+    return derived is not None and _base_metric(metric_name) == derived["series_name"]
+
+
+def is_monitored(source_id: str, metric_name: str) -> bool:
+    """Whether a (raw or rolling-average) metric belongs to shift detection."""
+    base = _base_metric(metric_name)
+    daily = DAILY_SOURCES.get(source_id)
+    if daily is not None:
+        allowed = daily.get("metrics")
+        prefixes = daily.get("metric_prefixes")
+        if prefixes is not None:
+            return base.startswith(tuple(prefixes))
+        return allowed is None or base in allowed
+    return is_sparse(source_id, metric_name)
 
 
 def _date_range(start: str, end: str) -> list[str]:
@@ -93,6 +135,8 @@ def _integrate_daily(
     metrics: dict[str, dict[str, float]] = defaultdict(dict)
     seen: set[tuple[str, str]] = set()
     for obs_date, metric_name, value, _ts in rows:
+        if not is_monitored(source_id, metric_name):
+            continue
         key = (obs_date, metric_name)
         if key not in seen:
             seen.add(key)
@@ -223,6 +267,93 @@ def _integrate_event(
     return {"source": source_id, "processed": len(seen), "inserted": inserted}
 
 
+def _derive_additions(
+    cursor: sqlite3.Cursor,
+    source_id: str,
+    event_type: str,
+    series_name: str,
+    metric_prefix: str,
+    cutoff_date: str,
+) -> dict[str, Any]:
+    """Derive a zero-filled daily additions series from an event catalog.
+
+    A day without additions is an observation of zero, not a gap, so the
+    series is filled with zeros up to the source's last successful collection
+    (an unchanged catalog adds no rows, but the day was still observed) and
+    never interpolated. The averages read the days before the cutoff too, so
+    every written average spans its full window.
+    """
+    log.info("Deriving %s for %s", series_name, source_id)
+
+    cursor.execute(
+        """SELECT MAX(d) FROM (
+               SELECT MAX(date(collection_timestamp)) AS d FROM raw_observations
+               WHERE source_id = ? AND event_type = ?
+               UNION ALL
+               SELECT substr(last_success, 1, 10) FROM source_health WHERE source_id = ?)""",
+        (source_id, event_type, source_id),
+    )
+    row = cursor.fetchone()
+    last_collected = row[0] if row else None
+    if last_collected is None or last_collected < cutoff_date:
+        log.info("  No collections for %s since %s", source_id, cutoff_date)
+        return {"source": source_id, "series": series_name, "inserted": 0}
+
+    windows = [("7d_avg", 7), ("30d_avg", 30)]
+    history_start = (datetime.strptime(cutoff_date, "%Y-%m-%d")
+                     - timedelta(days=max(w for _, w in windows) - 1)).strftime("%Y-%m-%d")
+    cursor.execute(
+        """SELECT observation_date, COUNT(DISTINCT metric_name)
+           FROM raw_observations
+           WHERE source_id = ? AND event_type = ?
+             AND metric_name LIKE ? AND observation_date >= ?
+           GROUP BY observation_date""",
+        (source_id, event_type, f"{metric_prefix}%", history_start),
+    )
+    counts = dict(cursor.fetchall())
+
+    history = {
+        d: float(counts.get(d, 0))
+        for d in _date_range(history_start, last_collected)
+    }
+    history_dates = sorted(history)
+
+    def written(values: dict[str, float]) -> dict[str, float]:
+        return {d: v for d, v in values.items() if d >= cutoff_date}
+
+    values_by_date = written(history)
+    sorted_dates = sorted(values_by_date)
+    series: list[tuple[str, dict[str, float]]] = [(series_name, values_by_date)]
+    for suffix, window in windows:
+        series.append((
+            f"{series_name}_{suffix}",
+            written(_rolling_average(history, history_dates, window)),
+        ))
+
+    inserted = 0
+    for metric_name, values in series:
+        for date_str, value in values.items():
+            try:
+                cursor.execute(
+                    """INSERT OR REPLACE INTO time_series
+                       (source_id, series_date, event_type, metric_name,
+                        value, interpolation_flag)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (source_id, date_str, event_type, metric_name, value, 0),
+                )
+                inserted += 1
+            except sqlite3.Error as e:
+                log.error("  Insert error for %s on %s: %s", metric_name, date_str, e)
+
+    log.info("  %d days, %d rows inserted", len(sorted_dates), inserted)
+    return {
+        "source": source_id,
+        "series": series_name,
+        "days": len(sorted_dates),
+        "inserted": inserted,
+    }
+
+
 def run_integration(
     db: TelemetryDB,
     *,
@@ -251,12 +382,21 @@ def run_integration(
         if source_filter and source_id != source_filter:
             continue
         result = _integrate_event(cursor, source_id, config["event_type"], cutoff_date)
+        derived = DERIVED_ADDITION_SERIES.get(source_id)
+        if derived:
+            result["derived_series"] = _derive_additions(
+                cursor, source_id, config["event_type"],
+                derived["series_name"], derived["metric_prefix"], cutoff_date,
+            )
         results.append(result)
         conn.commit()
 
     conn.close()
 
-    total_inserted = sum(r.get("inserted", 0) for r in results)
+    total_inserted = sum(
+        r.get("inserted", 0) + r.get("derived_series", {}).get("inserted", 0)
+        for r in results
+    )
     total_gaps = sum(r.get("gaps_found", 0) for r in results)
     total_interpolated = sum(r.get("interpolated", 0) for r in results)
 

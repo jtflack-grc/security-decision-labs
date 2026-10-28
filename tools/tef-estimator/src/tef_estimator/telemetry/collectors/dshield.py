@@ -9,14 +9,13 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from tef_estimator.config import get_config
 from tef_estimator.telemetry.collectors.base import CollectionSummary
 from tef_estimator.telemetry.db import TelemetryDB
 
 log = logging.getLogger(__name__)
 
 DEFAULT_PORTS = [3389, 445, 443, 22, 23, 8080, 8443]
-DEFAULT_LOOKBACK_DAYS = 7
-REQUEST_DELAY_SECONDS = 2
 REQUEST_TIMEOUT = 30
 USER_AGENT = "TEF-Telemetry-Agent/0.1 (research; FAIR-TEF-estimation)"
 
@@ -125,7 +124,8 @@ def _collect_port(
                 skipped += 1
                 continue
 
-            was_inserted = db.insert_observation(
+            # The latest collection wins: the current day is partial until it ends
+            was_inserted = db.upsert_observation(
                 cursor, SOURCE_ID, EVENT_TYPE,
                 obs_date, metric_name, metric_value,
                 "count", collection_ts, payload_hash,
@@ -139,6 +139,31 @@ def _collect_port(
     return inserted, skipped, True
 
 
+def _resume_from(cursor, port: int, earliest: datetime, overlap_days: int) -> datetime:
+    """First day to fetch: the last stored day minus the overlap (partial days),
+    or ``earliest`` for a port with no data since then."""
+    cursor.execute(
+        """SELECT MAX(observation_date) FROM raw_observations
+           WHERE source_id = ? AND metric_name = ? AND observation_date >= ?""",
+        (SOURCE_ID, f"unique_sources_port_{port}", earliest.strftime("%Y-%m-%d")),
+    )
+    last = cursor.fetchone()[0]
+    if last is None:
+        return earliest
+    last_day = datetime.strptime(last, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return max(earliest, last_day - timedelta(days=overlap_days))
+
+
+def _date_chunks(start: datetime, end: datetime, chunk_days: int) -> list[tuple[str, str]]:
+    chunks = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=chunk_days - 1), end)
+        chunks.append((cursor.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
+        cursor = chunk_end + timedelta(days=1)
+    return chunks
+
+
 class DShieldCollector:
     SOURCE_ID = SOURCE_ID
     CADENCE_DAYS = 1
@@ -148,13 +173,26 @@ class DShieldCollector:
         db: TelemetryDB,
         *,
         ports: list[int] | None = None,
-        lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+        lookback_days: int | None = None,
         **kwargs,
     ) -> CollectionSummary:
+        """Fill each port's daily series up to today.
+
+        From the last stored day minus an overlap (so partial days are
+        replaced), or ``history_days`` back for a port with no data; an
+        explicit ``lookback_days`` overrides this.
+        """
+        settings = get_config().telemetry_collectors["dshield"]
+        history_days = settings["history_days"]
+        chunk_days = settings["chunk_days"]
+        overlap_days = settings["overlap_days"]
+        delay = settings["request_delay_seconds"]
+        sleep = kwargs.get("sleep", time.sleep)
+
         ports = ports or DEFAULT_PORTS
-        now = datetime.now(timezone.utc)
-        end_date = now.strftime("%Y-%m-%d")
-        start_date = (now - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        now = kwargs.get("now") or datetime.now(timezone.utc)
+        today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        earliest = today - timedelta(days=history_days)
         collection_ts = db.collection_timestamp()
 
         log.info("Starting DShield collection")
@@ -166,23 +204,31 @@ class DShieldCollector:
         total_skipped = 0
         ports_succeeded = 0
         ports_failed = 0
+        requests_made = 0
 
-        for i, port in enumerate(ports):
-            inserted, skipped, success = _collect_port(
-                db, cursor, port, start_date, end_date, collection_ts,
-            )
-            total_inserted += inserted
-            total_skipped += skipped
+        for port in ports:
+            if lookback_days is not None:
+                start = today - timedelta(days=lookback_days)
+            else:
+                start = _resume_from(cursor, port, earliest, overlap_days)
 
-            if success:
+            port_ok = True
+            for chunk_start, chunk_end in _date_chunks(start, today, chunk_days):
+                if requests_made:
+                    sleep(delay)
+                requests_made += 1
+                inserted, skipped, success = _collect_port(
+                    db, cursor, port, chunk_start, chunk_end, collection_ts,
+                )
+                total_inserted += inserted
+                total_skipped += skipped
+                port_ok = port_ok and success
+                conn.commit()
+
+            if port_ok:
                 ports_succeeded += 1
             else:
                 ports_failed += 1
-
-            conn.commit()
-
-            if i < len(ports) - 1:
-                time.sleep(REQUEST_DELAY_SECONDS)
 
         health_notes = (
             f"{ports_succeeded}/{len(ports)} ports succeeded, "

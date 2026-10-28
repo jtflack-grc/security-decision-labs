@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from tef_estimator.telemetry.collectors import collect_all, get_all_collectors
+from tef_estimator.telemetry.collectors import get_all_collectors
 from tef_estimator.telemetry.db import TelemetryDB
 from tef_estimator.telemetry.integrator import run_integration
 
@@ -89,7 +89,7 @@ def run_due_collections(
 
         log.info("Running %s: %s", sid, reason)
         try:
-            summary = collector.collect(db)
+            summary = collector.collect(db, force=force)
             results.append(summary)
 
             if summary.get("status") == "completed":

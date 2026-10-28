@@ -13,7 +13,6 @@ def get_all_collectors() -> list:
     from tef_estimator.telemetry.collectors.dshield import DShieldCollector
     from tef_estimator.telemetry.collectors.ransomware_live import RansomwareLiveCollector
     from tef_estimator.telemetry.collectors.cisa_kev import CISAKEVCollector
-    from tef_estimator.telemetry.collectors.greynoise import GreyNoiseCollector
     from tef_estimator.telemetry.collectors.annual_report import AnnualReportCollector
     from tef_estimator.telemetry.collectors.iris_reference import IRISReferenceCollector
     from tef_estimator.telemetry.collectors.vector_benchmarks import VectorBenchmarksCollector
@@ -22,7 +21,6 @@ def get_all_collectors() -> list:
         DShieldCollector(),
         RansomwareLiveCollector(),
         CISAKEVCollector(),
-        GreyNoiseCollector(),
         AnnualReportCollector(),
         IRISReferenceCollector(),
         VectorBenchmarksCollector(),

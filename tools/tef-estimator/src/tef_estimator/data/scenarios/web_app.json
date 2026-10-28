@@ -1,21 +1,23 @@
 {
   "_metadata": {
     "scenario": "web_app_exploitation",
-    "description": "Web application exploitation scenario — TEF-D2",
-    "status": "Substrata-grounded",
+    "description": "Web application exploitation scenario",
+    "status": "derived",
     "extracted_date": "2026-07-24",
+    "cadence_months": 12,
     "extracted_by": "Laura Voicu",
-    "_data_sources_needed": [
-      "DBIR web-app pattern by industry (sector shares)",
-      "IRIS Exploit Public-Facing Application by revenue (base-rate anchor)"
-    ],
     "_susceptibility_note": "Edgescan (web app/API = 31.9% of critical+high findings, 2026) and Cobalt (serious-finding prevalence by sector, 2025) measure vulnerability prevalence: whether an attempt would succeed. They belong to the susceptibility assessment, not TEF; using them for TEF multipliers would count exposure twice."
   },
   "base_rate_triangulation": {
-    "_citation": "DBIR 2026 (exploitation 31%), Mandiant 2026 (exploitation 32%)",
+    "_citation": "One population (US organizations): the exfiltration base rate (FBI IC3 data-breach complaints) × the share of breaches through a web application. IRIS sets the floor. TEF = LEF ÷ susceptibility.",
     "susceptibility_prior": [0.10, 0.20, 0.30],
-    "consensus": [0.015, 0.045, 0.12],
-    "consensus_note": "Exploitation-dominant scenario. DBIR 2026 exploitation = 31% of initial access. Mode anchored at ~1.5x exfiltration consensus mode (exploitation is the most common vector)."
+    "_susceptibility_prior_note": "Judgment."
+  },
+  "base_rate_lef": {
+    "_method": "Breaches through a web application: the exfiltration recipe (events, under-reporting, tiers) × the web-app share of breaches. No US count of web-app events exists, so the share carries the scenario.",
+    "share_of": "exfiltration",
+    "share": [0.15, 0.25, 0.45],
+    "_share_note": "Judgment, labelled. Inputs: DBIR 2026 Basic Web Application Attacks 10% of breaches (global, all actors); BakerHostetler DSIR 2025 unpatched vulnerability about 25% of network-intrusion root causes (chart read, not web-specific); VCDB US 2013–2022, web application vector in 45% of external hacking or malware incidents with confirmed disclosure (356 / 799). The scenario counts breaches via web applications; defacement, application outages and account-takeover fraud without a breach are not counted (no US count exists)."
   },
   "vector_proportions": {
     "_citation": "DBIR 2026 Web Application pattern, adjusted for exploitation dominance",
@@ -25,23 +27,23 @@
     "supply_chain": [0.05, 0.10, 0.18]
   },
   "web_app_overall_share": {
-    "_citation": "DBIR 2026 incident classification pattern Basic Web Application Attacks = 10% of breaches (n=22,625 breaches, 2024-2025 data; Substrata record dbir2026_basic_web_app_all_all, hand-verified from PDF). Caveat: DBIR's denominator is breaches, while overall_share is used as a share of all cyber incidents (IRIS basis for ransomware), so the scale is approximate.",
+    "_citation": "DBIR 2026 incident classification pattern Basic Web Application Attacks = 10% of breaches (n=22,625 breaches, 2024-2025 data; hand-verified from the PDF). Caveat: DBIR's denominator is breaches, while overall_share is used as a share of all cyber incidents (IRIS basis for ransomware), so the scale is approximate.",
     "_badge": "amber",
     "value": 0.10
   },
   "web_app_sector_shares": {
-    "_citation": "Derived from sector_multipliers x overall_share. Technology skew from higher web surface area.",
+    "_citation": "No web-app-specific sector data. All null: the tool uses the IRIS 2025 all-incident sector multiplier (Figure A1) once.",
     "_badge": "gray",
-    "healthcare": 0.110,
-    "financial": 0.130,
-    "information": 0.180,
-    "manufacturing": 0.085,
-    "retail": 0.140,
-    "education": 0.120,
-    "public": 0.115,
-    "professional": 0.150,
-    "utilities": 0.065,
-    "transportation": 0.070
+    "healthcare": null,
+    "financial": null,
+    "information": null,
+    "manufacturing": null,
+    "retail": null,
+    "education": null,
+    "public": null,
+    "professional": null,
+    "utilities": null,
+    "transportation": null
   },
   "web_app_revenue_shares": {
     "_citation": "No web-app-specific revenue breakdown available. Uses all-incident shares from IRIS 2025.",
@@ -63,20 +65,6 @@
     "10b_100b": null,
     "over_100b": null
   },
-  "sector_multipliers": {
-    "_citation": "IRIS 2025 + Cofense 2026 bypass rates, adjusted for web-app exposure (technology 1.8x reflects higher web surface)",
-    "_badge": "amber",
-    "healthcare": 1.10,
-    "financial": 1.30,
-    "information": 1.80,
-    "manufacturing": 0.85,
-    "retail": 1.40,
-    "education": 1.20,
-    "public": 1.15,
-    "professional": 1.50,
-    "utilities": 0.65,
-    "transportation": 0.70
-  },
   "credential_tempo": {
     "_citation": "Web-app credential attacks (credential stuffing, brute force). Lower campaign volume than ransomware — attacks are more targeted to specific web applications.",
     "_badge": "amber",
@@ -87,8 +75,8 @@
   "exploitation_scanning": {
     "_citation": "GreyNoise-derived. Web-app exploitation uses a HIGH share of scanning activity — this is the primary vector.",
     "_badge": "amber",
-    "grn_malicious_rate": [0.20, 0.38, 0.55],
-    "grn_malicious_rate_note": "Higher than ransomware baseline — web-app is exploitation-dominant.",
+    "grn_malicious_rate": [0.20, 0.28, 0.35],
+    "grn_malicious_rate_note": "Shared with ransomware: the GreyNoise IP-level malicious rate describes scanning, not the scenario; the scenario enters through ransomware_proportion_of_scanning and PoA.",
     "grn_session_malicious_rate": 0.037,
     "grn_suspicious_rate": null,
     "campaign_ip_ratio_lognormal_mu": 4.0,
@@ -101,6 +89,6 @@
   "output_templates": {
     "scenario_label": "Web Application Exploitation",
     "attempt_verb": "attempt web application exploitation against",
-    "one_sentence": "Based on industry data, threat actors {attempt_verb} organizations matching your profile roughly once every {recurrence_years:.0f} years (range: {low_yr:.0f}-{high_yr:.0f} years). This measures how often adversaries TRY -- not how often they succeed. Success probability depends on your controls (assessed separately)."
+    "one_sentence": "Based on industry data, threat actors {attempt_verb} organizations matching your profile {recurrence} (range: {low} to {high})."
   }
 }

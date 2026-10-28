@@ -7,9 +7,11 @@ Invisible to scanning telemetry -- bounded by operational tempo / addressable po
 
 from __future__ import annotations
 
+from tef_estimator.config import TEFConfig, get_config
+from tef_estimator.base_rate import geo_multiplier, scenario_floor, tier_concentration
 from tef_estimator.data.common import (
-    FLOOR_ANCHORS,
     GEO_MULTIPLIERS,
+    Geography,
     PERTRange,
     TECH_MULTIPLIERS,
     DampeningConfig,
@@ -27,13 +29,14 @@ class CredentialVector:
     This is the largest single pathway and the one most
     directly bounded by attacker operational tempo data.
 
-    Floor: IRIS observed LEF x credential vector proportion
+    Floor: observed LEF (scenario_floor) x credential vector proportion
     Ceiling: operational tempo x credential proportion / addressable population
     Positioning: base rate x credential proportion x profile multipliers
     """
 
-    def __init__(self, dampening: DampeningConfig | None = None):
+    def __init__(self, dampening: DampeningConfig | None = None, config: TEFConfig | None = None):
         self.dampening = dampening or DampeningConfig()
+        self.config = config or get_config()
 
     def estimate(
         self,
@@ -47,9 +50,9 @@ class CredentialVector:
         cred_proportion = scenario.vector_proportions["credential"]
 
         # --- Floor ---
-        overall_floor = FLOOR_ANCHORS["overall_lower_bound"]
+        overall_floor = scenario_floor(scenario, profile.revenue_band)
         floor = overall_floor * cred_proportion.mode * adjusted_sector
-        trace.add_step("IRIS overall floor", overall_floor, "=", "IRIS 2025 observed LEF", overall_floor)
+        trace.add_step("Observed floor", overall_floor, "=", "observed LEF lower bound for the revenue tier", overall_floor)
         trace.add_step("Credential proportion", cred_proportion.mode, "x", "IR report vector split", overall_floor * cred_proportion.mode)
         trace.add_step("Sector adjustment", adjusted_sector, "x", f"IRIS x {scenario.scenario_name} share", floor)
 
@@ -61,8 +64,25 @@ class CredentialVector:
             * 12
             / tempo["addressable_population"].low
         )
-        ceiling = ceiling_high
-        trace.add_step("Ceiling (operational tempo)", ceiling, "=", "Ransomware.live campaigns / addressable pop", ceiling)
+        # Sector and geography adjust the ceiling as they adjust the positioning,
+        # so the audit-trail check compares like with like. The campaign counts
+        # are claimed victims, i.e. attacks that succeeded; a ceiling on threat
+        # events (attempts) divides by susceptibility, as the base-rate anchors
+        # do, at its low end because this is a maximum.
+        # A campaign count from one country (BEC: US IC3 complaints) already carries
+        # that country's level: geography relative to it; worldwide counts: absolute.
+        home = getattr(scenario, "credential_tempo_geography", None)
+        geo_adjust = GEO_MULTIPLIERS[profile.geography].mode / (
+            GEO_MULTIPLIERS[Geography(home)].mode if home else 1.0)
+        tier = tier_concentration(scenario, profile.revenue_band)
+        susceptibility_low = self.config.susceptibility_prior.low
+        ceiling = ceiling_high * adjusted_sector * geo_adjust * tier / susceptibility_low
+        trace.add_step("Ceiling (operational tempo)", ceiling, "=",
+                       f"credential campaigns / addressable pop {ceiling_high:.5f} "
+                       f"× sector {adjusted_sector:.2f} × geography {geo_adjust:.2f} "
+                       f"× revenue tier {tier:.2f} "
+                       f"÷ susceptibility {susceptibility_low:.2f} (attempts, not successes)",
+                       ceiling)
 
         # --- Positioning ---
         drivers = []
@@ -115,12 +135,12 @@ class CredentialVector:
             )
 
         # Geography
-        geo_mult = GEO_MULTIPLIERS[profile.geography]
+        geo_mult = geo_multiplier(scenario, profile.geography)
         multipliers.append(geo_mult)
 
         # Trace multipliers
         cred_base_mode = base_rate.mode * cred_proportion.mode
-        trace.add_step("Base rate (mode)", base_rate.mode, "=", "Three-anchor consensus", base_rate.mode)
+        trace.add_step("Base rate (mode)", base_rate.mode, "=", "scenario base rate (see base rate derivation)", base_rate.mode)
         trace.add_step("Credential proportion", cred_proportion.mode, "x", "Vector split", cred_base_mode)
         running = cred_base_mode
         mult_meta = [
@@ -139,15 +159,13 @@ class CredentialVector:
         raw_composite = 1.0
         for m in multipliers:
             raw_composite *= m.mode
-        dampened = dampen_composite(
-            raw_composite, self.dampening.factor_k, self.dampening.max_composite
-        )
+        composite = dampen_composite(raw_composite, self.dampening.factor_k, self.dampening.max_composite)
         trace.add_step("Raw composite", raw_composite, "=", "Product of all multipliers", raw_composite)
-        trace.add_step("Dampened composite", dampened, "dampened()", f"k={self.dampening.factor_k}, max={self.dampening.max_composite}", dampened)
+        trace.add_step("Dampened composite", composite, "dampened()", f"k={self.dampening.factor_k}, max={self.dampening.max_composite}", composite)
 
         # Positioned estimate
-        positioned_median = cred_base_mode * dampened
-        trace.add_step("Positioned median", positioned_median, "=", "base x proportion x dampened", positioned_median)
+        positioned_median = cred_base_mode * composite
+        trace.add_step("Positioned median", positioned_median, "=", "base x proportion x composite", positioned_median)
 
         positioned_low = base_rate.low * cred_proportion.low * dampen_composite(
             _product([m.low for m in multipliers]),
@@ -167,7 +185,7 @@ class CredentialVector:
             positioned_high=positioned_high,
             primary_drivers=drivers,
             data_sources=[
-                "Ransomware.live (operational tempo)",
+                "Ransomware.live / Recorded Future (claimed victims, credential ceiling)",
                 "Beazley Q3 2025 (48% VPN credentials as initial access)",
                 "At-Bay 2025 (VPN in 80% of RW attacks)",
                 "IRIS 2025 (sector/size multipliers)",

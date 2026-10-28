@@ -2,7 +2,7 @@
 tef-estimator: Data-grounded Threat Event Frequency estimation.
 
 Vector-decomposed ransomware TEF estimation using public empirical data
-from IRIS, DBIR, Unit42, Mandiant, CrowdStrike, Beazley, IBM, Coalition, DShield, and GreyNoise.
+from IRIS, DBIR, Unit42, Mandiant, CrowdStrike, Beazley, IBM, DShield, and GreyNoise.
 
 Point-in-time estimates — refresh quarterly.
 """
@@ -34,9 +34,10 @@ def _resolve_version() -> str:
 
 __version__ = _resolve_version()
 
-from tef_estimator.profile import OrganizationProfile
-from tef_estimator.engine import TEFEngine
-from tef_estimator.result import TEFResult
-from tef_estimator.credibility import OrgTelemetry, VectorObservation
+# After __version__: engine imports it from this package.
+from tef_estimator.profile import OrganizationProfile  # noqa: E402
+from tef_estimator.engine import TEFEngine  # noqa: E402
+from tef_estimator.result import TEFResult  # noqa: E402
+from tef_estimator.credibility import OrgTelemetry, VectorObservation  # noqa: E402
 
 __all__ = ["OrganizationProfile", "TEFEngine", "TEFResult", "OrgTelemetry", "VectorObservation"]

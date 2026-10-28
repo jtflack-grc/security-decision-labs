@@ -13,24 +13,12 @@ are asserted (judgment), not fitted; see docs/technical-reference.md §8.3.
 The blend formula is equivalent to the Gamma-inspired posterior mean with
 Gamma(α, β=k) prior. The engine uses this equivalence to motivate a
 Gamma-inspired band contraction mechanism (see engine.py and
-docs/technical-reference.md §8.6 for derivation and limitations).
+docs/technical-reference.md §8.6 for the derivation).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
-from tef_estimator.config import get_config
-
-
-def _get_credibility_k() -> dict[str, float]:
-    ck = get_config().credibility_k
-    return {
-        "exploitation": ck.exploitation,
-        "credential": ck.credential,
-        "phishing": ck.phishing,
-        "supply_chain": ck.supply_chain,
-    }
 
 
 @dataclass(frozen=True)
@@ -115,11 +103,15 @@ class CredibilityBlender:
     Higher k → credibility grows slowly (low-observability vectors).
     """
 
-    def __init__(self, k_overrides: dict[str, float] | None = None):
-        base_k = _get_credibility_k()
-        self.vector_k = dict(base_k)
-        if k_overrides:
-            self.vector_k.update(k_overrides)
+    def __init__(self, vector_k: dict[str, float]):
+        """``vector_k`` maps vector name -> structural k (required).
+
+        The k values are passed in explicitly (the engine uses
+        ``TEFConfig.credibility_k``); the blender never reads the global
+        config, so a swept or custom config takes effect without a stale
+        fallback.
+        """
+        self.vector_k = dict(vector_k)
 
     def blend(self, prior: float, obs: VectorObservation) -> BlendResult:
         k = self.vector_k.get(obs.vector)

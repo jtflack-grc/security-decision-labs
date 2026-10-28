@@ -3,33 +3,15 @@
     "scenario": "bec",
     "description": "Business Email Compromise scenario-specific derived parameters",
     "extracted_date": "2026-05-24",
+    "cadence_months": 12,
     "extracted_by": "Laura Voicu"
   },
   "base_rate_triangulation": {
-    "_citation": "Three-anchor consensus: FBI IC3 (operational tempo), Verizon/IRIS back-calculation, Coalition insurer-adjusted",
-    "susceptibility_prior": [0.10, 0.20, 0.30],
-    "operational_tempo": [
-      0.06,
-      0.15,
-      0.36
-    ],
-    "operational_tempo_note": "FBI IC3 2024: 21,489 BEC complaints/$2.9B losses. Estimated 5-10x underreporting \u2192 107k-215k actual events. Against ~6M US businesses \u2192 1.8-3.6% LEF. Divide by susceptibility 10-30% \u2192 TEF 6-36%.",
-    "verizon_back_calculation": [
-      0.04,
-      0.08,
-      0.15
-    ],
-    "verizon_back_calculation_note": "DBIR 2025: social engineering ~20% of breaches. BEC ~50% of social eng \u2192 ~10% of all breaches. IRIS all-incident LEF ~4.65%. BEC share \u2192 0.47% LEF. Susceptibility 5-15% \u2192 TEF 3.1-9.4%. Widened range for uncertainty.",
-    "coalition_insurer_adjusted": [
-      0.03,
-      0.06,
-      0.12
-    ],
-    "coalition_insurer_adjusted_note": "Coalition overall claims 1.48% US. BEC estimated 15-25% of claims \u2192 0.22-0.37% claims frequency. Bias correction 3.70x \u2192 0.81-1.37% LEF. Susceptibility 10-30% \u2192 TEF 2.7-13.7%.",
-    "consensus": [
-      0.04,
+    "_citation": "One population (US businesses): FBI IC3 complaints set the base rate and the floor. TEF = LEF ÷ susceptibility.",
+    "susceptibility_prior": [
       0.1,
-      0.25
+      0.2,
+      0.3
     ]
   },
   "vector_proportions": {
@@ -83,7 +65,7 @@
     "other": null
   },
   "bec_revenue_shares": {
-    "_citation": "Derived from FBI IC3 2024 + Coalition 2025. BEC targeting scales less steeply with revenue than ransomware \u2014 small businesses are also heavily targeted (payroll diversion, invoice fraud).",
+    "_citation": "Derived from FBI IC3 2024 + Coalition 2025. BEC targeting scales less steeply with revenue than ransomware — small businesses are also heavily targeted (payroll diversion, invoice fraud).",
     "under_10m": 0.15,
     "10m_100m": 0.14,
     "100m_1b": 0.12,
@@ -92,7 +74,7 @@
     "over_100b": 0.05
   },
   "bec_revenue_prob_gte2": {
-    "_citation": "Not available from IRIS for BEC specifically. All null \u2014 tool falls back to overall floor.",
+    "_citation": "Not available from IRIS for BEC specifically. All null — tool falls back to overall floor.",
     "under_10m": null,
     "10m_100m": null,
     "100m_1b": null,
@@ -101,36 +83,39 @@
     "over_100b": null
   },
   "credential_tempo": {
-    "_citation": "Derived from Flashpoint 2025 (1.8B compromised credentials), CrowdStrike 2025 (800% credential theft increase), FBI IC3",
+    "_citation": "FBI IC3 2024 (21,489 BEC complaints, US) with this scenario's own underreporting factor (operational_tempo_note) and credential vector share; US addressable population as in the base rate.",
+    "_derivation": "campaigns/month = 21,489 × [5, 7.5, 10] ÷ 12 = [8,954, 13,431, 17,908] (US; each BEC event targets one organization); credential_proportion = BEC's credential vector share (account takeover of business email); addressable population = ~6M US businesses (Census), matching IC3's US scope. Replaces earlier judgment values (300-1,500 campaigns/month, 15-35%).",
     "global_campaigns_per_month": [
-      300,
-      800,
-      1500
+      8954,
+      13431,
+      17908
     ],
     "credential_proportion": [
       0.15,
-      0.25,
-      0.35
+      0.22,
+      0.3
     ],
     "addressable_population": [
-      5000000,
-      10000000,
-      15000000
+      6000000,
+      6000000,
+      6000000
     ],
+    "geography": "us",
+    "_geography_note": "IC3 complaints are US victims over US firms, so the ceiling's geography multiplier is relative to the US (US = 1.0). Ransomware, exfiltration and web app count campaigns worldwide over a global population and keep the absolute multiplier.",
     "note": "BEC credential vector = account takeover via compromised business email. Tempo is lower than ransomware because BEC account compromise campaigns are more targeted."
   },
   "exploitation_scanning": {
     "_citation": "BEC rarely involves exploitation. Minimal values reflecting edge cases (email server exploits, MFA bypass vulnerabilities).",
     "status": "minimal_for_bec",
     "grn_malicious_rate": [
-      0.01,
-      0.03,
-      0.05
+      0.2,
+      0.28,
+      0.35
     ],
-    "grn_malicious_rate_derivation": "BEC exploitation is rare. Values reflect edge cases like Exchange ProxyLogon/ProxyShell used for email access, not typical scanning.",
+    "grn_malicious_rate_note": "Shared with ransomware: the GreyNoise IP-level malicious rate describes scanning, not the scenario; the scenario enters through ransomware_proportion_of_scanning and PoA.",
     "grn_session_malicious_rate": 0.037,
     "grn_suspicious_rate": null,
-    "grn_suspicious_rate_note": "Not meaningful for BEC \u2014 exploitation is not a primary BEC vector.",
+    "grn_suspicious_rate_note": "Not meaningful for BEC — exploitation is not a primary BEC vector.",
     "campaign_ip_ratio_lognormal_mu": 4.0,
     "campaign_ip_ratio_lognormal_sigma": 1.5,
     "campaign_ip_ratio_note": "Copied from ransomware. Rarely binding for BEC.",
@@ -139,7 +124,7 @@
       0.03,
       0.05
     ],
-    "poa_ransomware_note": "For BEC, this is 'probability of email server exploitation leading to BEC' \u2014 very low.",
+    "poa_ransomware_note": "For BEC, this is 'probability of email server exploitation leading to BEC' — very low.",
     "ransomware_proportion_of_scanning": [
       0.01,
       0.03,
@@ -150,6 +135,38 @@
   "output_templates": {
     "scenario_label": "Business Email Compromise",
     "attempt_verb": "attempt BEC against",
-    "one_sentence": "Based on industry data, BEC operators {attempt_verb} organizations matching your profile roughly once every {recurrence_years:.0f} years (range: {low_yr:.0f}-{high_yr:.0f} years). This measures how often adversaries TRY -- not how often they succeed. Success probability depends on your controls (assessed separately)."
+    "one_sentence": "Based on industry data, BEC operators {attempt_verb} organizations matching your profile {recurrence} (range: {low} to {high})."
+  },
+  "base_rate_lef": {
+    "_method": "Same recipe as ransomware with one tier: US BEC events per year (FBI IC3 complaints × reporting multiplier) ÷ US firms. The revenue multiplier then applies.",
+    "geography": "us",
+    "n_us": 24768,
+    "_n_us_note": "FBI IC3 2025 report p.7: Business Email Compromise 24,768 complaints ($3,046,598,558 losses, p.8).",
+    "underreporting": [
+      5.0,
+      7.5,
+      10.0
+    ],
+    "_underreporting_note": "Judgment, no data: how many BEC losses never reach IC3. The one assumed input of this base rate.",
+    "tiers": {
+      "all": {
+        "bands": [
+          "under_10m",
+          "10m_100m",
+          "100m_1b",
+          "1b_10b",
+          "10b_100b",
+          "over_100b"
+        ],
+        "us_firms": 6395635,
+        "victim_share": 1.0
+      }
+    },
+    "_tier_note": "Census SUSB 2022: 6,395,635 US employer firms.",
+    "_geography_note": "The base rate counts US events over US firms, so the geography multiplier is relative to the US (US = 1.0)."
+  },
+  "floor_lef": {
+    "_citation": "FBI IC3 2025 BEC complaints ÷ US firms (24,768 ÷ 6,395,635): reported losses only, so a lower bound.",
+    "all": 0.003873
   }
 }

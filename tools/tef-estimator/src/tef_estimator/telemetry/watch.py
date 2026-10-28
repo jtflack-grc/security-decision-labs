@@ -6,17 +6,30 @@ compare against baseline → re-estimate watched profiles if signals fire.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tef_estimator.data.scenarios import SCENARIO_CLASSES
 from tef_estimator.telemetry.compare import CompareResult, compare
 from tef_estimator.telemetry.db import TelemetryDB
 from tef_estimator.telemetry.scheduler import run_due_collections
 
 log = logging.getLogger(__name__)
+
+# Profile-file keys that hold enum values, mapped to OrganizationProfile fields
+_ENUM_FIELDS = {
+    "sector": "Sector",
+    "revenue_band": "RevenueBand",
+    "geography": "Geography",
+}
+_ENUM_LIST_FIELDS = {
+    "remote_access": "RemoteAccessType",
+    "edge_vendors": "RemoteAccessType",
+}
 
 
 @dataclass
@@ -25,6 +38,44 @@ class WatchProfile:
     name: str
     profile_kwargs: dict[str, Any]
     scenario_name: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> WatchProfile:
+        """Build from a profiles-file entry: enum fields given by value.
+
+        ``{"name": "plant-eu", "scenario": "ransomware", "sector": "manufacturing",
+        "revenue_band": "100m_1b", "geography": "western_europe",
+        "remote_access": ["fortinet"], "employee_count": 2000}``
+        """
+        from tef_estimator.data import common
+
+        d = dict(d)
+        name = d.pop("name")
+        scenario = d.pop("scenario", None)
+        if scenario is not None and scenario not in SCENARIO_CLASSES:
+            raise ValueError(f"profile {name!r}: unknown scenario {scenario!r}")
+        kwargs: dict[str, Any] = {}
+        for key, value in d.items():
+            if key in _ENUM_FIELDS:
+                kwargs[key] = getattr(common, _ENUM_FIELDS[key])(value)
+            elif key in _ENUM_LIST_FIELDS:
+                enum = getattr(common, _ENUM_LIST_FIELDS[key])
+                kwargs[key] = [enum(v) for v in value]
+            else:
+                kwargs[key] = value
+        return cls(name=name, profile_kwargs=kwargs, scenario_name=scenario)
+
+
+def load_watch_profiles(path: Path) -> list[WatchProfile]:
+    """Read a JSON list of watched profiles (see WatchProfile.from_dict)."""
+    entries = json.loads(Path(path).read_text())
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: expected a JSON list of profiles")
+    profiles = [WatchProfile.from_dict(e) for e in entries]
+    names = [p.name for p in profiles]
+    if len(set(names)) != len(names):
+        raise ValueError(f"{path}: profile names must be unique")
+    return profiles
 
 
 @dataclass
@@ -46,15 +97,20 @@ def run_once(
     force: bool = False,
     baseline_dir: Path | None = None,
     state_dir: Path | None = None,
+    live: bool | None = None,
 ) -> WatchCycleResult:
     """Execute one full watch cycle.
 
     1. Run due collectors + integrate
     2. Compare against baseline
-    3. If signals, re-estimate any watched profiles
+    3. If signals, re-estimate any watched profiles, each under its own
+       scenario, with live-derived inputs when live mode is on (``live``,
+       else config ``telemetry_inputs``)
     """
+    from tef_estimator.config import get_config
     from tef_estimator.engine import TEFEngine
     from tef_estimator.profile import OrganizationProfile
+    from tef_estimator.telemetry.derive import live_config, use_live
 
     kwargs: dict[str, Any] = {"force": force}
     if state_dir:
@@ -78,20 +134,33 @@ def run_once(
 
         if compare_result.has_signals and profiles:
             log.info("Signals detected — re-estimating %d profile(s)", len(profiles))
-            engine = TEFEngine()
-
+            config = None
+            is_live = use_live(get_config(), live)
+            live_fits: dict[str, float | None] = {}
+            if is_live:
+                config, fits = live_config(db)
+                live_fits = {f"{f.kind}/{f.name}": f.shape_r for f in fits
+                             if f.kind in ("vectors", "scenarios")}
             for wp in profiles:
                 try:
                     profile = OrganizationProfile(**wp.profile_kwargs)
+                    slug = wp.scenario_name or "ransomware"
+                    engine = TEFEngine(scenario=SCENARIO_CLASSES[slug](), config=config)
                     result = engine.estimate(profile)
-                    re_estimated.append({
+                    entry = {
                         "profile": wp.name,
-                        "composite_tef": result.composite_tef,
+                        "scenario": result.scenario_name,
+                        "tef_median": result.total_positioned_median,
                         "signals_count": len(compare_result.signals),
-                    })
+                        "inputs": "live" if is_live else "frozen",
+                    }
+                    if is_live:
+                        entry["live_dispersion"] = live_fits
+                        entry["live_base_rate"] = (config.live_base_rate or {}).get(slug)
+                    re_estimated.append(entry)
                     log.info(
-                        "  %s: composite TEF = %.4f",
-                        wp.name, result.composite_tef,
+                        "  %s: TEF median = %.4f",
+                        wp.name, result.total_positioned_median,
                     )
                 except Exception as e:
                     log.error("  Re-estimation failed for %s: %s", wp.name, e)
@@ -118,6 +187,7 @@ def watch_loop(
     baseline_dir: Path | None = None,
     state_dir: Path | None = None,
     max_cycles: int | None = None,
+    live: bool | None = None,
 ) -> None:
     """Run the watch cycle repeatedly."""
     cycle = 0
@@ -132,6 +202,7 @@ def watch_loop(
                 threshold=threshold,
                 baseline_dir=baseline_dir,
                 state_dir=state_dir,
+                live=live,
             )
 
             if result.had_signals:

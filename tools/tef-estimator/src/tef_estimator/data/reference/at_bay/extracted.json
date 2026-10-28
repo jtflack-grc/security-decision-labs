@@ -4,9 +4,11 @@
     "access": "Email form: https://www.at-bay.com/2025-insursec-report/",
     "secondary_source": "BusinessWire press release (freely accessible, confirms key figures)",
     "extracted_date": "2026-05-24",
+    "edition": "At-Bay 2025",
+    "cadence_months": 12,
     "extracted_by": "Laura Voicu"
   },
-  "_substrata_assessment": {
+  "_source_assessment": {
     "source_id": "at_bay",
     "verdict": "pass_with_caveats",
     "methodology_transparency": "adequate",

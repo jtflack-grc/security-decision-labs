@@ -7,9 +7,8 @@ Partially observable -- email volume is measurable but campaign initiation is no
 
 from __future__ import annotations
 
+from tef_estimator.base_rate import geo_multiplier, scenario_floor
 from tef_estimator.data.common import (
-    FLOOR_ANCHORS,
-    GEO_MULTIPLIERS,
     PERTRange,
     TECH_MULTIPLIERS,
     DampeningConfig,
@@ -28,7 +27,7 @@ class PhishingVector:
     more recipients = higher probability at least one takes the bait within
     a single campaign.
 
-    Floor: IRIS observed LEF x phishing proportion
+    Floor: observed LEF (scenario_floor) x phishing proportion
     Ceiling: anti-phishing vendor campaign volume data (Proofpoint, Cofense)
     Positioning: base rate x phishing proportion x profile multipliers
     """
@@ -48,9 +47,9 @@ class PhishingVector:
         phish_proportion = scenario.vector_proportions["phishing"]
 
         # --- Floor ---
-        overall_floor = FLOOR_ANCHORS["overall_lower_bound"]
+        overall_floor = scenario_floor(scenario, profile.revenue_band)
         floor = overall_floor * phish_proportion.mode * adjusted_sector
-        trace.add_step("IRIS overall floor", overall_floor, "=", "IRIS 2025 observed LEF", overall_floor)
+        trace.add_step("Observed floor", overall_floor, "=", "observed LEF lower bound for the revenue tier", overall_floor)
         trace.add_step("Phishing proportion", phish_proportion.mode, "x", "IR report vector split", overall_floor * phish_proportion.mode)
         trace.add_step("Sector adjustment", adjusted_sector, "x", f"IRIS x {scenario.scenario_name} share", floor)
 
@@ -90,12 +89,12 @@ class PhishingVector:
             drivers.append(f"Small employee count: {small_mult.mode}x (fewer phishing targets)")
 
         # Geography
-        geo_mult = GEO_MULTIPLIERS[profile.geography]
+        geo_mult = geo_multiplier(scenario, profile.geography)
         multipliers.append(geo_mult)
 
         # Trace multipliers
         phish_base_mode = base_rate.mode * phish_proportion.mode
-        trace.add_step("Base rate (mode)", base_rate.mode, "=", "Three-anchor consensus", base_rate.mode)
+        trace.add_step("Base rate (mode)", base_rate.mode, "=", "scenario base rate (see base rate derivation)", base_rate.mode)
         trace.add_step("Phishing proportion", phish_proportion.mode, "x", "Vector split", phish_base_mode)
         running = phish_base_mode
         mult_meta = [
@@ -114,14 +113,12 @@ class PhishingVector:
         raw_composite = 1.0
         for m in multipliers:
             raw_composite *= m.mode
-        dampened = dampen_composite(
-            raw_composite, self.dampening.factor_k, self.dampening.max_composite
-        )
+        composite = dampen_composite(raw_composite, self.dampening.factor_k, self.dampening.max_composite)
         trace.add_step("Raw composite", raw_composite, "=", "Product of all multipliers", raw_composite)
-        trace.add_step("Dampened composite", dampened, "dampened()", f"k={self.dampening.factor_k}, max={self.dampening.max_composite}", dampened)
+        trace.add_step("Dampened composite", composite, "dampened()", f"k={self.dampening.factor_k}, max={self.dampening.max_composite}", composite)
 
-        positioned_median = phish_base_mode * dampened
-        trace.add_step("Positioned median", positioned_median, "=", "base x proportion x dampened", positioned_median)
+        positioned_median = phish_base_mode * composite
+        trace.add_step("Positioned median", positioned_median, "=", "base x proportion x composite", positioned_median)
 
         positioned_low = base_rate.low * phish_proportion.low * dampen_composite(
             _product([m.low for m in multipliers]),

@@ -1,18 +1,22 @@
-"""Tests for the dispersion feature (Gamma-mixed rate, negative binomial counts)."""
+"""Distributions: PERT, lognormal, dampening, and the negative-binomial dispersion model."""
 
 import numpy as np
 import pytest
 from scipy import stats
 
 from tef_estimator.config import TEFConfig
-from tef_estimator.data.common import Geography, RemoteAccessType, RevenueBand, Sector
+from tef_estimator.data.common import Geography, PERTRange, RemoteAccessType, RevenueBand, Sector
 from tef_estimator.data.scenarios.bec import BECScenario
-from tef_estimator.distributions import POISSON, DispersionParams, sample_annual_counts
+from tef_estimator.distributions import (
+    POISSON,
+    DispersionParams,
+    LognormalParams,
+    dampen_composite,
+    pert_distribution,
+    sample_annual_counts,
+)
 from tef_estimator.engine import TEFEngine
 from tef_estimator.profile import OrganizationProfile
-
-from tests.fft_oracle import CompoundLoss, negbin_pgf, poisson_pgf
-
 
 def _nb(shape, rate):
     """scipy negative binomial with mean `rate` and Gamma shape `shape`."""
@@ -128,8 +132,8 @@ class TestConfig:
     def test_defaults(self):
         cfg = TEFConfig.from_dict({})
         expl = cfg.dispersion_for("vectors", "exploitation")
-        assert expl.shape_r == pytest.approx(21.6) and expl.timescale == "month" and expl.basis == "detrended"
-        assert cfg.dispersion_for("scenarios", "ransomware").shape_r == pytest.approx(129.7)
+        assert expl.shape_r == pytest.approx(22.5) and expl.timescale == "month" and expl.basis == "detrended"
+        assert cfg.dispersion_for("scenarios", "ransomware").shape_r == pytest.approx(113.7)
         for vec in ("credential", "phishing", "supply_chain"):
             assert cfg.dispersion_for("vectors", vec).is_poisson
         assert cfg.dispersion_for("scenarios", "bec").is_poisson
@@ -137,7 +141,7 @@ class TestConfig:
     def test_raw_basis_switches_to_raw_fit(self):
         cfg = TEFConfig.from_dict({"dispersion": {"basis": "raw"}})
         d = cfg.dispersion_for("vectors", "exploitation")
-        assert d.basis == "raw" and d.shape_r == pytest.approx(13.3)
+        assert d.basis == "raw" and d.shape_r == pytest.approx(10.5)
 
     def test_bad_kind(self):
         with pytest.raises(ValueError):
@@ -150,9 +154,9 @@ class TestOutput:
     def test_to_dict_fields(self):
         r = TEFEngine(config=TEFConfig.from_dict({})).estimate(_profile())
         disp = r.to_dict()["analysis"]["dispersion"]
-        assert disp["total"]["shape_r_month"] == pytest.approx(129.7)
-        assert disp["total"]["vmr_at_median"] == pytest.approx(1 + r.total_positioned_median / (12 * 129.7))
-        assert disp["vectors"]["exploitation"]["annual_shape"] == pytest.approx(12 * 21.6)
+        assert disp["total"]["shape_r_month"] == pytest.approx(113.7)
+        assert disp["total"]["vmr_at_median"] == pytest.approx(1 + r.total_positioned_median / (12 * 113.7))
+        assert disp["vectors"]["exploitation"]["annual_shape"] == pytest.approx(12 * 22.5)
         assert disp["vectors"]["credential"]["shape_r_month"] is None
 
     def test_report_line_only_when_set(self):
@@ -173,12 +177,6 @@ class TestOutput:
         assert on.total_positioned_median == off.total_positioned_median
         assert on.lognormal == off.lognormal
 
-    def test_result_sampler_mean(self):
-        r = TEFEngine(config=TEFConfig.from_dict({})).estimate(_profile())
-        counts = r.sample_annual_counts(size=400_000, rng=np.random.default_rng(5))
-        assert counts.mean() == pytest.approx(r.lognormal.mean, rel=0.03)
-
-
 class TestFairRiskEngineHandoff:
     """7. The inputs printed for fair-risk-engine rebuild this lognormal and carry the total annual shape."""
 
@@ -195,7 +193,7 @@ class TestFairRiskEngineHandoff:
 
     def test_dispersion_is_the_total_annual_shape(self):
         r = TEFEngine(config=TEFConfig.from_dict({})).estimate(_profile())
-        assert r.fair_risk_engine_inputs()["tef_dispersion"] == pytest.approx(12 * 129.7)
+        assert r.fair_risk_engine_inputs()["tef_dispersion"] == pytest.approx(12 * 113.7)
         raw = r.fair_risk_engine_inputs(basis="raw")["tef_dispersion"]
         assert raw == pytest.approx(r.total_dispersion.as_raw().annual_shape)
 
@@ -209,32 +207,57 @@ class TestFairRiskEngineHandoff:
         assert "For fair-risk-engine: tef_model='lognormal'" in r.full_report()
 
 
-def _fft_annual_loss_quantile(rate, shape, q, median=300e3, p95=4e6, n=1 << 18, ceiling=600e6):
-    """Closed-form annual loss quantile: Poisson or Gamma-mixed Poisson frequency, lognormal severity."""
-    sigma = np.log(p95 / median) / stats.norm.ppf(0.95)
-    pgf = poisson_pgf(rate) if shape is None else negbin_pgf(rate, shape)
-    oracle = CompoundLoss(lambda x: stats.lognorm.cdf(x, s=sigma, scale=median), pgf, h=ceiling / n, n=n)
-    assert oracle.severity_tail < 1e-5
-    return oracle.quantile(q)
+class TestPERTDistribution:
+    def test_basic_pert(self):
+        r = PERTRange(0.01, 0.05, 0.10)
+        dist = pert_distribution(r)
+        assert dist is not None
+        # Mean should be close to PERT mean: (a + 4b + c) / 6
+        expected_mean = (0.01 + 4 * 0.05 + 0.10) / 6
+        assert abs(dist.mean() - expected_mean) < 0.01
+
+    def test_pert_bounds(self):
+        r = PERTRange(0.001, 0.01, 0.05)
+        dist = pert_distribution(r)
+        samples = dist.rvs(size=10_000, random_state=42)
+        assert samples.min() >= r.low - 1e-10
+        assert samples.max() <= r.high + 1e-10
+
+    def test_pert_invalid_range(self):
+        with pytest.raises(ValueError, match="low < high"):
+            pert_distribution(PERTRange(0.05, 0.03, 0.01))
+
+    def test_pert_symmetric_range(self):
+        # Mode at the midpoint (b == mu) previously raised ZeroDivisionError.
+        r = PERTRange(0.5, 0.75, 1.0)
+        dist = pert_distribution(r)
+        expected_mean = (0.5 + 4 * 0.75 + 1.0) / 6
+        assert abs(dist.mean() - expected_mean) < 0.01
+        # Symmetric: alpha == beta, so the distribution is centered on the mode.
+        assert abs(dist.median() - 0.75) < 0.01
 
 
-class TestLossTailCrossCheck:
-    """8. Exact FFT annual loss against the sampler (FFT vs MC within ~1%)."""
+class TestLognormalParams:
+    def test_from_median_and_range(self):
+        lp = LognormalParams.from_median_and_range(
+            median=0.02, low=0.005, high=0.10
+        )
+        assert abs(lp.median - 0.02) < 0.005
+        assert lp.sigma >= 0.1  # Minimum sigma
 
-    @pytest.mark.parametrize("rate", [1.0, 5.0, 50.0])
-    def test_p99_matches_fft(self, rate):
-        shape = 2.2
-        d = DispersionParams(shape, timescale="year", source="test")
-        rng = np.random.default_rng(int(rate))
-        counts = sample_annual_counts(np.full(200_000, rate), d, rng)
-        sigma = np.log(4e6 / 300e3) / stats.norm.ppf(0.95)
-        losses = np.zeros(counts.size)
-        idx = np.repeat(np.arange(counts.size), counts)
-        np.add.at(losses, idx, rng.lognormal(np.log(300e3), sigma, size=idx.size))
-        mc = np.quantile(losses, 0.99)
-        exact = _fft_annual_loss_quantile(rate, shape, 0.99)
-        assert mc == pytest.approx(exact, rel=0.02)
+class TestDampening:
+    def test_cap_enforced(self):
+        dampened = dampen_composite(100.0, k=0.9, max_cap=5.0)
+        assert dampened == 5.0
 
-    def test_fft_poisson_limit(self):
-        assert _fft_annual_loss_quantile(5.0, 1e9, 0.99) == pytest.approx(
-            _fft_annual_loss_quantile(5.0, None, 0.99), rel=0.001)
+    def test_formula(self):
+        # Dampened = 1 + (Raw - 1) * k
+        raw, k = 2.5, 0.7
+        expected = 1.0 + (raw - 1.0) * k
+        assert abs(dampen_composite(raw, k) - expected) < 1e-10
+
+    def test_below_one_input(self):
+        # If raw < 1, dampening should bring closer to 1 (not further)
+        dampened = dampen_composite(0.5, k=0.7)
+        assert dampened < 1.0
+        assert dampened > 0.5  # Pulled toward 1

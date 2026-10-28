@@ -47,7 +47,7 @@ Agent-based simulation of FAIR-CAM control dynamics. Reproduction package for Jo
 
 Data-grounded Threat Event Frequency estimation with vector decomposition. Produces defensible TEF estimates for FAIR risk quantification by decomposing threat frequency into four initial access vectors.
 
-**Features:** Four-vector decomposition (exploitation, credential, phishing, supply chain), three-anchor base rate triangulation, cross-vector dampening (VERIS-calibrated), credibility blending with org telemetry, web UI, CLI, continuous telemetry monitoring
+**Features:** Four-vector decomposition (exploitation, credential, phishing, supply chain), base rates counted on one population (US events ÷ US firms) with observed floors, cross-vector dampening (VERIS-calibrated), credibility blending with org telemetry, web UI, CLI, telemetry monitoring with live inputs (frozen by default)
 
 **Install:** `pip install tef-estimator` · [PyPI](https://pypi.org/project/tef-estimator/)
 
